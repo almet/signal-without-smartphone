@@ -88,10 +88,52 @@ jobs:
              target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
       - name: Upload artifact
+        if: ${{ contains(github.server_url, 'github.com') }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+
+      - name: Upload asset to Forgejo release
+        if: ${{ !contains(github.server_url, 'github.com') }}
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          REPO_API="${{ github.server_url }}/api/v1/repos/${{ github.repository }}"
+          GITHUB_RELEASE_BASE="https://github.com/almet/signal-without-smartphone/releases/download/${TAG}"
+          RELEASE_BODY=$'macOS downloads (hosted on GitHub):\n- Intel (x86_64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-intel"$'\n- Apple Silicon (arm64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-silicon"
+
+          RELEASE=$(curl -s -H "Authorization: token ${FORGEJO_TOKEN}" "${REPO_API}/releases/tags/${TAG}" || true)
+          RELEASE_ID=$(echo "$RELEASE" | jq -r '.id // empty')
+
+          if [ -z "$RELEASE_ID" ]; then
+            RELEASE_PAYLOAD=$(jq -n \
+              --arg tag "${TAG}" \
+              --arg body "${RELEASE_BODY}" \
+              '{tag_name: $tag, name: ("Release " + $tag), draft: false, prerelease: false, body: $body}')
+
+            RELEASE=$(curl -s -X POST \
+              -H "Authorization: token ${FORGEJO_TOKEN}" \
+              -H "Content-Type: application/json" \
+              "${REPO_API}/releases" \
+              -d "${RELEASE_PAYLOAD}")
+            RELEASE_ID=$(echo "$RELEASE" | jq -r '.id // empty')
+          fi
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Failed to create or fetch release"
+            exit 1
+          fi
+
+          FILE="target/${{ matrix.target }}/release/${{ matrix.asset_name }}"
+          FILENAME="${{ matrix.asset_name }}"
+          echo "Uploading ${FILENAME}..."
+          curl -s -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H "Content-Type: application/octet-stream" \
+            "${REPO_API}/releases/${RELEASE_ID}/assets?name=${FILENAME}" \
+            --data-binary @"$FILE"
 
   build-macos:
     name: Build ${{ matrix.target }}
@@ -161,9 +203,8 @@ jobs:
   create-release:
     name: Create Release
     needs: [build, build-macos]
-    # Run if linux/windows builds succeeded; allow build-macos to be skipped (Codeberg)
-    if: ${{ always() && needs.build.result == 'success' && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') }}
-    runs-on: ${{ contains(github.server_url, 'github.com') && 'ubuntu-latest' || 'codeberg-medium' }}
+    if: ${{ contains(github.server_url, 'github.com') && needs.build.result == 'success' && needs.build-macos.result == 'success' }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -189,43 +230,3 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Codeberg / Forgejo
-      - name: Create Forgejo Release
-        if: ${{ !contains(github.server_url, 'github.com') }}
-        env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-        run: |
-          GITHUB_TAG="${{ github.ref_name }}"
-          GITHUB_RELEASE_BASE="https://github.com/almet/signal-without-smartphone/releases/download/${GITHUB_TAG}"
-          RELEASE_BODY=$'macOS downloads (hosted on GitHub):\n- Intel (x86_64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-intel"$'\n- Apple Silicon (arm64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-silicon"
-
-          RELEASE_PAYLOAD=$(jq -n \
-            --arg tag "${GITHUB_TAG}" \
-            --arg body "${RELEASE_BODY}" \
-            '{tag_name: $tag, name: ("Release " + $tag), draft: false, prerelease: false, body: $body}')
-
-          RELEASE=$(curl -s -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
-            -d "${RELEASE_PAYLOAD}")
-
-          echo "Release response: $RELEASE"
-          RELEASE_ID=$(echo "$RELEASE" | jq -r '.id')
-
-          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
-            echo "Failed to create release"
-            exit 1
-          fi
-
-          for file in artifacts/*/*; do
-            [ -f "$file" ] || continue
-            FILENAME=$(basename "$file")
-            echo "Uploading ${FILENAME}..."
-            curl -s -X POST \
-              -H "Authorization: token ${FORGEJO_TOKEN}" \
-              -H "Content-Type: application/octet-stream" \
-              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${FILENAME}" \
-              --data-binary @"$file"
-          done
