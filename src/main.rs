@@ -1,14 +1,20 @@
 use arboard::Clipboard;
 use eframe::egui;
 use egui::RichText;
+use flate2::read::GzDecoder;
 use image::DynamicImage;
 use rxing::{
     common::HybridBinarizer, BinaryBitmap, BufferedImageLuminanceSource, DecodeHintType,
     DecodeHintValue, MultiFormatReader, Reader,
 };
+use std::fs;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
+use tar::Archive;
+
+include!(concat!(env!("OUT_DIR"), "/embedded_signal_cli.rs"));
 
 // ── Color palette ─────────────────────────────────────────────────────────────
 
@@ -95,11 +101,7 @@ impl SignalSetupApp {
         setup_style(&cc.egui_ctx);
         let signal_cli = find_signal_cli();
         let status = if signal_cli.is_none() {
-            Status::Error(
-                "signal-cli not found. Run download-signal-cli.sh (Linux/macOS) \
-                 or download-signal-cli.ps1 (Windows) first."
-                    .into(),
-            )
+            missing_signal_cli_status()
         } else {
             Status::None
         };
@@ -119,11 +121,7 @@ impl SignalSetupApp {
     fn new_empty() -> Self {
         let signal_cli = find_signal_cli();
         let status = if signal_cli.is_none() {
-            Status::Error(
-                "signal-cli not found. Run download-signal-cli.sh (Linux/macOS) \
-                 or download-signal-cli.ps1 (Windows) first."
-                    .into(),
-            )
+            missing_signal_cli_status()
         } else {
             Status::None
         };
@@ -714,16 +712,116 @@ fn submit_row(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
 
 // ── Signal-cli helpers ────────────────────────────────────────────────────────
 
+fn missing_signal_cli_status() -> Status {
+    Status::Error(
+        "signal-cli not found. This build does not include embedded signal-cli. \
+         Install an official release or provide signal-cli in ./signal-cli, next to the app, or on PATH."
+            .into(),
+    )
+}
+
+fn signal_cli_cache_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("SIGNAL_SETUP_HOME") {
+        return Some(PathBuf::from(dir));
+    }
+
+    if cfg!(windows) {
+        if let Ok(dir) = std::env::var("LOCALAPPDATA") {
+            return Some(PathBuf::from(dir).join("signal-setup"));
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        if let Ok(home) = std::env::var("HOME") {
+            return Some(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("signal-setup"),
+            );
+        }
+    }
+
+    if let Ok(dir) = std::env::var("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(dir).join("signal-setup"));
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(PathBuf::from(home).join(".cache").join("signal-setup"));
+    }
+
+    Some(std::env::temp_dir().join("signal-setup"))
+}
+
+fn embedded_signal_cli() -> Option<PathBuf> {
+    let bytes = EMBEDDED_SIGNAL_CLI?;
+    let cache_dir = signal_cli_cache_dir()?;
+    let bin = if cfg!(windows) {
+        "signal-cli.bat"
+    } else {
+        "signal-cli"
+    };
+    let install_dir = cache_dir.join("signal-cli");
+    let candidate = install_dir.join("bin").join(bin);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+
+    if extract_embedded_signal_cli(bytes, &cache_dir).is_err() {
+        return None;
+    }
+
+    let candidate = install_dir.join("bin").join(bin);
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn extract_embedded_signal_cli(bytes: &[u8], cache_dir: &PathBuf) -> Result<(), String> {
+    let install_dir = cache_dir.join("signal-cli");
+    if install_dir.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(cache_dir).map_err(|e| e.to_string())?;
+    let temp_dir = cache_dir.join(format!("signal-cli-extract-{}", std::process::id()));
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+    let cursor = Cursor::new(bytes);
+    let gz = GzDecoder::new(cursor);
+    let mut archive = Archive::new(gz);
+    archive.unpack(&temp_dir).map_err(|e| e.to_string())?;
+
+    let extracted = temp_dir.join("signal-cli");
+    if !extracted.exists() {
+        return Err("Embedded signal-cli archive missing top-level signal-cli directory".into());
+    }
+
+    fs::rename(&extracted, &install_dir).map_err(|e| e.to_string())?;
+    let _ = fs::remove_dir_all(&temp_dir);
+    Ok(())
+}
+
 /// Find the signal-cli binary. Search order:
-///   1. `signal-cli/bin/signal-cli[.bat]` relative to the current working directory
-///   2. Same location relative to the running executable
-///   3. `signal-cli` on PATH
+///   1. Embedded signal-cli extracted to cache dir
+///   2. `signal-cli/bin/signal-cli[.bat]` relative to the current working directory
+///   3. Same location relative to the running executable
+///   4. `signal-cli` on PATH
 fn find_signal_cli() -> Option<PathBuf> {
     let bin = if cfg!(windows) {
         "signal-cli.bat"
     } else {
         "signal-cli"
     };
+
+    if let Some(embedded) = embedded_signal_cli() {
+        return Some(embedded);
+    }
 
     // 1. Relative to cwd
     let local = PathBuf::from("signal-cli").join("bin").join(bin);

@@ -32,3 +32,4 @@ target/
 
 # signal-cli download (excluded from repo, obtained via download script)
 signal-cli/
+signal-cli-embed.tar.gz

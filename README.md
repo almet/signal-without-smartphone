@@ -11,6 +11,7 @@ Signal Desktop — no smartphone required.
 - SMS verification
 - Link Signal Desktop via device URI
 - Small self-contained binary (no Node.js, no webview)
+- signal-cli embedded in release binaries (no separate download)
 
 ## How it works
 
@@ -26,19 +27,17 @@ The tool provides a step-by-step wizard that wraps
 ## Quick start
 
 ```bash
-# 1. Download signal-cli
-./download-signal-cli.sh        # Linux / macOS
-# OR
-.\download-signal-cli.ps1       # Windows PowerShell
-
-# 2. Build the app
+# 1. Build the app
 cargo build --release
 
-# 3. Run it (from the project root, next to the signal-cli/ directory)
+# 2. Run it
 ./target/release/signal-setup
 ```
 
-See [QUICKSTART.md](QUICKSTART.md) for detailed per-platform instructions.
+Release binaries already include signal-cli. For local development builds without embedding,
+you can still run `download-signal-cli.sh` or `download-signal-cli.ps1` to provide it.
+To embed it in local builds, provide a `signal-cli-embed.tar.gz` (top-level `signal-cli/`)
+or set `SIGNAL_CLI_ARCHIVE` to its path before building.
 
 ## Build requirements
 

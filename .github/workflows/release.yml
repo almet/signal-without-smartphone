@@ -46,6 +46,41 @@ jobs:
             --no-modify-path
           echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
 
+      - name: Prepare embedded signal-cli
+        run: |
+          SIGNAL_CLI_VERSION="v0.13.24"
+          BASE_URL="https://github.com/AsamK/signal-cli/releases/download/${SIGNAL_CLI_VERSION}"
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu)
+              ARCHIVE="signal-cli-${SIGNAL_CLI_VERSION:1}-Linux-native.tar.gz"
+              ;;
+            x86_64-pc-windows-gnu)
+              ARCHIVE="signal-cli-${SIGNAL_CLI_VERSION:1}.tar.gz"
+              ;;
+            *)
+              echo "Unsupported target: ${{ matrix.target }}"
+              exit 1
+              ;;
+          esac
+
+          curl -fSL -o signal-cli-archive "${BASE_URL}/${ARCHIVE}"
+          rm -rf signal-cli
+          tar -xzf signal-cli-archive
+          if [ "$ARCHIVE" = "signal-cli-${SIGNAL_CLI_VERSION:1}-Linux-native.tar.gz" ] && [ -f "signal-cli" ]; then
+            mkdir -p signal-cli/bin
+            mv signal-cli signal-cli/bin/signal-cli
+            chmod +x signal-cli/bin/signal-cli
+          else
+            EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "signal-cli-*" | head -1)
+            if [ -z "$EXTRACTED_DIR" ]; then
+              echo "Could not find extracted directory"
+              exit 1
+            fi
+            mv "$EXTRACTED_DIR" signal-cli
+          fi
+          tar -czf signal-cli-embed.tar.gz signal-cli
+          rm -f signal-cli-archive
+
       - name: Install cross-compilation tools
         if: ${{ matrix.cross }}
         run: cargo install cross --git https://github.com/cross-rs/cross
@@ -167,6 +202,24 @@ jobs:
             --no-modify-path
           echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
           rustup target add ${{ matrix.target }}
+
+      - name: Prepare embedded signal-cli
+        run: |
+          SIGNAL_CLI_VERSION="v0.13.24"
+          BASE_URL="https://github.com/AsamK/signal-cli/releases/download/${SIGNAL_CLI_VERSION}"
+          ARCHIVE="signal-cli-${SIGNAL_CLI_VERSION:1}.tar.gz"
+
+          curl -fSL -o signal-cli-archive "${BASE_URL}/${ARCHIVE}"
+          rm -rf signal-cli
+          tar -xzf signal-cli-archive
+          EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "signal-cli-*" | head -1)
+          if [ -z "$EXTRACTED_DIR" ]; then
+            echo "Could not find extracted directory"
+            exit 1
+          fi
+          mv "$EXTRACTED_DIR" signal-cli
+          tar -czf signal-cli-embed.tar.gz signal-cli
+          rm -f signal-cli-archive
 
       - name: Cache cargo registry
         uses: actions/cache@v4

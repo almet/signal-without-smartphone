@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Signal Desktop setup tool for users without smartphones"
 authors = ["almet"]
 edition = "2021"
+build = "build.rs"
 
 [[bin]]
 name = "signal-setup"
@@ -15,6 +16,8 @@ egui = "0.30"
 image = "0.25"
 rxing = "0.6"
 arboard = "3.4"
+flate2 = "1.0"
+tar = "0.4"
 
 [profile.release]
 opt-level = "z"     # Optimize for size
