@@ -1,3 +1,5 @@
+mod signal_http;
+
 use arboard::Clipboard;
 use eframe::egui;
 use egui::RichText;
@@ -6,7 +8,7 @@ use rxing::{
     common::HybridBinarizer, BinaryBitmap, BufferedImageLuminanceSource, DecodeHintType,
     DecodeHintValue, MultiFormatReader, Reader,
 };
-use std::path::PathBuf;
+use signal_http::SignalAccount;
 use std::process::Command;
 use std::sync::mpsc;
 
@@ -56,11 +58,12 @@ impl Step {
 // ── Background-work result types ──────────────────────────────────────────────
 
 enum WorkResult {
-    RegisterOk { needs_verify: bool },
-    RegisterNeedsCaptcha,
+    RegisterOk { session_id: String },
+    RegisterNeedsCaptcha { session_id: String },
     RegisterError(String),
-    VerifyOk,
+    VerifyOk { account: SignalAccount },
     VerifyError(String),
+    DeviceTransferAvailable,
     LinkOk,
     LinkError(String),
 }
@@ -86,57 +89,47 @@ struct SignalSetupApp {
     device_uri: String,
     status: Status,
     loading: bool,
-    signal_cli: Option<PathBuf>,
+    /// Session ID returned by the verification session API (steps 1–3).
+    session_id: Option<String>,
+    /// Account key material after successful registration (steps 3–4).
+    signal_account: Option<SignalAccount>,
     result_rx: Option<mpsc::Receiver<WorkResult>>,
+    /// Set to true when registration returns 409 (existing account supports
+    /// device transfer). The UI shows an explanation and a "Skip Transfer" button.
+    device_transfer_available: bool,
 }
 
 impl SignalSetupApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
-        let signal_cli = find_signal_cli();
-        let status = if signal_cli.is_none() {
-            Status::Error(
-                "signal-cli not found. Run download-signal-cli.sh (Linux/macOS) \
-                 or download-signal-cli.ps1 (Windows) first."
-                    .into(),
-            )
-        } else {
-            Status::None
-        };
         Self {
             step: Step::default(),
             phone: String::new(),
             captcha_token: String::new(),
             verification_code: String::new(),
             device_uri: String::new(),
-            status,
+            status: Status::None,
             loading: false,
-            signal_cli,
+            session_id: None,
+            signal_account: None,
             result_rx: None,
+            device_transfer_available: false,
         }
     }
 
     fn new_empty() -> Self {
-        let signal_cli = find_signal_cli();
-        let status = if signal_cli.is_none() {
-            Status::Error(
-                "signal-cli not found. Run download-signal-cli.sh (Linux/macOS) \
-                 or download-signal-cli.ps1 (Windows) first."
-                    .into(),
-            )
-        } else {
-            Status::None
-        };
         Self {
             step: Step::default(),
             phone: String::new(),
             captcha_token: String::new(),
             verification_code: String::new(),
             device_uri: String::new(),
-            status,
+            status: Status::None,
             loading: false,
-            signal_cli,
+            session_id: None,
+            signal_account: None,
             result_rx: None,
+            device_transfer_available: false,
         }
     }
 
@@ -171,17 +164,13 @@ impl eframe::App for SignalSetupApp {
 
         if let Some(result) = self.poll_result() {
             match result {
-                WorkResult::RegisterOk { needs_verify } => {
-                    if needs_verify {
-                        self.status = Status::Info("Verification code sent to your phone.".into());
-                        self.step = Step::Verification;
-                    } else {
-                        self.status =
-                            Status::Success("Account activated — no verification needed.".into());
-                        self.step = Step::Linking;
-                    }
+                WorkResult::RegisterOk { session_id } => {
+                    self.session_id = Some(session_id);
+                    self.status = Status::Info("Verification code sent to your phone.".into());
+                    self.step = Step::Verification;
                 }
-                WorkResult::RegisterNeedsCaptcha => {
+                WorkResult::RegisterNeedsCaptcha { session_id } => {
+                    self.session_id = Some(session_id);
                     self.status =
                         Status::Info("A captcha is required to complete registration.".into());
                     self.step = Step::Captcha;
@@ -189,12 +178,18 @@ impl eframe::App for SignalSetupApp {
                 WorkResult::RegisterError(e) => {
                     self.status = Status::Error(format!("Registration failed: {e}"));
                 }
-                WorkResult::VerifyOk => {
+                WorkResult::VerifyOk { account } => {
+                    self.signal_account = Some(account);
+                    self.device_transfer_available = false;
                     self.status = Status::Success("Phone number verified.".into());
                     self.step = Step::Linking;
                 }
                 WorkResult::VerifyError(e) => {
                     self.status = Status::Error(format!("Verification failed: {e}"));
+                }
+                WorkResult::DeviceTransferAvailable => {
+                    self.device_transfer_available = true;
+                    self.status = Status::None;
                 }
                 WorkResult::LinkOk => {
                     self.status = Status::Success("Device linked successfully!".into());
@@ -295,14 +290,23 @@ impl SignalSetupApp {
 
         ui.add_space(18.0);
 
-        let ready = !self.phone.is_empty() && self.signal_cli.is_some();
+        let ready = !self.phone.is_empty();
         let clicked = submit_row(ui, ready, "Register");
 
         if clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && ready)
         {
-            let path = self.signal_cli.clone().unwrap();
             let phone = self.phone.clone();
-            self.spawn(ctx.clone(), move || register_signal(&path, &phone, None));
+            self.spawn(ctx.clone(), move || {
+                match signal_http::request_verification_code(&phone, None) {
+                    Ok(signal_http::VerificationRequest::CodeSent { session_id }) => {
+                        WorkResult::RegisterOk { session_id }
+                    }
+                    Ok(signal_http::VerificationRequest::CaptchaRequired { session_id }) => {
+                        WorkResult::RegisterNeedsCaptcha { session_id }
+                    }
+                    Err(e) => WorkResult::RegisterError(e.to_string()),
+                }
+            });
         }
     }
 
@@ -344,25 +348,98 @@ impl SignalSetupApp {
 
         egui::TextEdit::multiline(&mut self.captcha_token)
             .desired_width(f32::INFINITY)
-            .desired_rows(4)
+            .desired_rows(2)
             .hint_text("signalcaptcha://signal-hcaptcha....")
-            .font(egui::FontId::monospace(13.0))
+            .font(egui::FontId::monospace(11.0))
             .show(ui);
 
-        ui.add_space(18.0);
+        ui.add_space(12.0);
 
-        let ready = !self.captcha_token.is_empty() && self.signal_cli.is_some();
+        let ready = !self.captcha_token.is_empty();
         if submit_row(ui, ready, "Submit captcha") {
-            let path = self.signal_cli.clone().unwrap();
-            let phone = self.phone.clone();
+            let session_id = self.session_id.clone().unwrap_or_default();
             let token = self.captcha_token.trim().to_string();
             self.spawn(ctx.clone(), move || {
-                register_signal(&path, &phone, Some(&token))
+                match signal_http::submit_captcha(&session_id, &token) {
+                    Ok(signal_http::VerificationRequest::CodeSent { session_id }) => {
+                        WorkResult::RegisterOk { session_id }
+                    }
+                    Ok(signal_http::VerificationRequest::CaptchaRequired { session_id }) => {
+                        WorkResult::RegisterNeedsCaptcha { session_id }
+                    }
+                    Err(e) => WorkResult::RegisterError(e.to_string()),
+                }
             });
         }
     }
 
     fn ui_verify(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // When a device transfer is available, replace the whole form with the prompt.
+        if self.device_transfer_available {
+            step_header(ui, "Verify phone number", "Step 3 of 4");
+            ui.add_space(16.0);
+
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgb(255, 247, 237))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(253, 186, 116)))
+                .rounding(egui::Rounding::same(10.0))
+                .inner_margin(egui::Margin::same(14.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("⚠️  Device Transfer Available")
+                            .strong()
+                            .color(egui::Color32::from_rgb(154, 52, 18))
+                            .size(14.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "Your phone number is linked to an existing Signal account whose \
+                            device supports data transfer. Signal can copy your message history \
+                            directly from the old device to a new one over your local network.\n\n\
+                            Since this tool does not implement the transfer receiver, you can \
+                            skip the transfer and register a fresh account. Your contacts will \
+                            stay intact (they're tied to your phone number), but existing \
+                            message history will not be transferred.",
+                        )
+                        .color(egui::Color32::from_rgb(120, 53, 15))
+                        .size(12.0),
+                    );
+                    ui.add_space(10.0);
+                    let skip_clicked = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Skip Transfer & Register Fresh")
+                                    .size(13.0)
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(234, 88, 12))
+                            .rounding(egui::Rounding::same(8.0))
+                            .min_size(egui::vec2(0.0, 32.0)),
+                        )
+                        .clicked();
+
+                    if skip_clicked && !self.loading {
+                        let phone = self.phone.clone();
+                        let session_id = self.session_id.clone().unwrap_or_default();
+                        let code = self.verification_code.clone();
+                        self.device_transfer_available = false;
+                        self.spawn(ctx.clone(), move || {
+                            match signal_http::verify_and_register(
+                                &phone,
+                                &session_id,
+                                &code,
+                                true,
+                            ) {
+                                Ok(account) => WorkResult::VerifyOk { account },
+                                Err(e) => WorkResult::VerifyError(e.to_string()),
+                            }
+                        });
+                    }
+                });
+            return;
+        }
+
         step_header(ui, "Verify phone number", "Step 3 of 4");
 
         ui.label(
@@ -382,23 +459,21 @@ impl SignalSetupApp {
 
         ui.add_space(18.0);
 
-        let ready = !self.verification_code.is_empty() && self.signal_cli.is_some();
+        let ready = !self.verification_code.is_empty();
         let clicked = submit_row(ui, ready, "Verify");
 
         if clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && ready)
         {
-            let path = self.signal_cli.clone().unwrap();
             let phone = self.phone.clone();
+            let session_id = self.session_id.clone().unwrap_or_default();
             let code = self.verification_code.clone();
+            self.device_transfer_available = false;
             self.spawn(ctx.clone(), move || {
-                match Command::new(&path)
-                    .args(["-a", &phone, "verify", &code])
-                    .output()
-                {
-                    Ok(o) if o.status.success() => WorkResult::VerifyOk,
-                    Ok(o) => WorkResult::VerifyError(
-                        String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                    ),
+                match signal_http::verify_and_register(&phone, &session_id, &code, false) {
+                    Ok(account) => WorkResult::VerifyOk { account },
+                    Err(signal_http::SignalError::DeviceTransferAvailable) => {
+                        WorkResult::DeviceTransferAvailable
+                    }
                     Err(e) => WorkResult::VerifyError(e.to_string()),
                 }
             });
@@ -468,20 +543,13 @@ impl SignalSetupApp {
 
         ui.add_space(18.0);
 
-        let ready = !self.device_uri.trim().is_empty() && self.signal_cli.is_some();
+        let ready = !self.device_uri.trim().is_empty() && self.signal_account.is_some();
         if submit_row(ui, ready, "Link device") {
-            let path = self.signal_cli.clone().unwrap();
-            let phone = self.phone.clone();
+            let account = self.signal_account.clone().unwrap();
             let uri = self.device_uri.trim().to_string();
             self.spawn(ctx.clone(), move || {
-                match Command::new(&path)
-                    .args(["-a", &phone, "addDevice", "--uri", &uri])
-                    .output()
-                {
-                    Ok(o) if o.status.success() => WorkResult::LinkOk,
-                    Ok(o) => {
-                        WorkResult::LinkError(String::from_utf8_lossy(&o.stderr).trim().to_string())
-                    }
+                match signal_http::link_device(&account, &uri) {
+                    Ok(()) => WorkResult::LinkOk,
                     Err(e) => WorkResult::LinkError(e.to_string()),
                 }
             });
@@ -712,48 +780,7 @@ fn submit_row(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
     clicked
 }
 
-// ── Signal-cli helpers ────────────────────────────────────────────────────────
-
-/// Find the signal-cli binary. Search order:
-///   1. `signal-cli/bin/signal-cli[.bat]` relative to the current working directory
-///   2. Same location relative to the running executable
-///   3. `signal-cli` on PATH
-fn find_signal_cli() -> Option<PathBuf> {
-    let bin = if cfg!(windows) {
-        "signal-cli.bat"
-    } else {
-        "signal-cli"
-    };
-
-    // 1. Relative to cwd
-    let local = PathBuf::from("signal-cli").join("bin").join(bin);
-    if local.exists() {
-        return Some(local);
-    }
-
-    // 2. Relative to the executable
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let c = dir.join("signal-cli").join("bin").join(bin);
-            if c.exists() {
-                return Some(c);
-            }
-        }
-    }
-
-    // 3. PATH
-    let check = if cfg!(windows) { "where" } else { "which" };
-    if let Ok(out) = Command::new(check).arg("signal-cli").output() {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !s.is_empty() {
-                return Some(PathBuf::from(s));
-            }
-        }
-    }
-
-    None
-}
+// ── URL helpers ───────────────────────────────────────────────────────────────
 
 /// Open a URL in the system default browser, cross-platform.
 fn open_url(url: &str) {
@@ -765,57 +792,6 @@ fn open_url(url: &str) {
 
     #[cfg(target_os = "windows")]
     let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
-}
-
-/// Run `signal-cli register`, handling captcha and "already registered".
-fn register_signal(path: &PathBuf, phone: &str, captcha: Option<&str>) -> WorkResult {
-    let mut cmd = Command::new(path);
-    cmd.args(["-a", phone, "register"]);
-    if let Some(t) = captcha {
-        cmd.args(["--captcha", t]);
-    }
-
-    let out = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return WorkResult::RegisterError(e.to_string()),
-    };
-
-    let mut stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let mut stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    let mut success = out.status.success();
-
-    // If already registered: unregister and retry once.
-    if !success && stderr.contains("already registered") {
-        let _ = Command::new(path)
-            .args(["-a", phone, "unregister"])
-            .output();
-        let mut retry = Command::new(path);
-        retry.args(["-a", phone, "register"]);
-        if let Some(t) = captcha {
-            retry.args(["--captcha", t]);
-        }
-        match retry.output() {
-            Ok(o) => {
-                success = o.status.success();
-                stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                stderr = String::from_utf8_lossy(&o.stderr).to_string();
-            }
-            Err(e) => return WorkResult::RegisterError(e.to_string()),
-        }
-    }
-
-    if !success {
-        if stderr.to_lowercase().contains("captcha") || stdout.to_lowercase().contains("captcha") {
-            return WorkResult::RegisterNeedsCaptcha;
-        }
-        return WorkResult::RegisterError(stderr.trim().to_string());
-    }
-
-    let skip_verify =
-        stderr.contains("verify is not necessary") || stdout.contains("verify is not necessary");
-    WorkResult::RegisterOk {
-        needs_verify: !skip_verify,
-    }
 }
 
 // ── QR Code decoding helpers ──────────────────────────────────────────────────
@@ -1097,3 +1073,5 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| Ok(Box::new(SignalSetupApp::new(cc)))),
     )
 }
+
+

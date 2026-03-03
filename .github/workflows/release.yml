@@ -54,7 +54,7 @@ jobs:
         if: ${{ !matrix.cross }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev protobuf-compiler
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -125,6 +125,9 @@ jobs:
             --no-modify-path
           echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
           rustup target add ${{ matrix.target }}
+
+      - name: Install macOS dependencies
+        run: brew install protobuf
 
       - name: Cache cargo registry
         uses: actions/cache@v4
