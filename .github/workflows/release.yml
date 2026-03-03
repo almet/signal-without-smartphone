@@ -93,9 +93,76 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
+  build-macos:
+    name: Build ${{ matrix.target }}
+    # macOS runners are only available on GitHub — skipped entirely on Codeberg
+    if: ${{ contains(github.server_url, 'github.com') }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Intel — native build on Intel runner
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: signal-setup
+            asset_name: signal-setup-macos-intel
+
+          # macOS Silicon — native build on ARM runner
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: signal-setup
+            asset_name: signal-setup-macos-silicon
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+            --default-toolchain stable \
+            --no-modify-path
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: |
+          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
+             target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+
   create-release:
     name: Create Release
-    needs: build
+    needs: [build, build-macos]
+    # Run if linux/windows builds succeeded; allow build-macos to be skipped (Codeberg)
+    if: ${{ always() && needs.build.result == 'success' && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') }}
     runs-on: ${{ contains(github.server_url, 'github.com') && 'ubuntu-latest' || 'codeberg-medium' }}
     permissions:
       contents: write
@@ -129,16 +196,20 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
+          GITHUB_TAG="${{ github.ref_name }}"
+          GITHUB_RELEASE_BASE="https://github.com/almet/signal-without-smartphone/releases/download/${GITHUB_TAG}"
+          RELEASE_BODY=$'macOS downloads (hosted on GitHub):\n- Intel (x86_64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-intel"$'\n- Apple Silicon (arm64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-silicon"
+
+          RELEASE_PAYLOAD=$(jq -n \
+            --arg tag "${GITHUB_TAG}" \
+            --arg body "${RELEASE_BODY}" \
+            '{tag_name: $tag, name: ("Release " + $tag), draft: false, prerelease: false, body: $body}')
+
           RELEASE=$(curl -s -X POST \
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H "Content-Type: application/json" \
             "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
-            -d "{
-              \"tag_name\": \"${{ github.ref_name }}\",
-              \"name\": \"Release ${{ github.ref_name }}\",
-              \"draft\": false,
-              \"prerelease\": false
-            }")
+            -d "${RELEASE_PAYLOAD}")
 
           echo "Release response: $RELEASE"
           RELEASE_ID=$(echo "$RELEASE" | jq -r '.id')
