@@ -33,6 +33,7 @@ hmac = "0.12"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 thiserror = "2"
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Signal Protocol (official Rust implementation) — used for proper session
 # establishment and encrypted sync messages after device linking.
