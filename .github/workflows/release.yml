@@ -11,57 +11,48 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    # Codeberg provides: codeberg-tiny (1CPU/2GB/2min), codeberg-small (2CPU/4GB/5min),
+    # codeberg-medium (4CPU/8GB/10min). Use medium; cache hits are needed to stay under limit.
+    runs-on: codeberg-medium
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          # Linux x86_64 (native)
+          - target: x86_64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-amd64
 
-          # Linux ARM64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+          # Linux ARM64 (cross-compiled)
+          - target: aarch64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-arm64
             cross: true
 
-          # macOS Intel
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: signal-setup
-            asset_name: signal-setup-macos-intel
-
-          # macOS Apple Silicon
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: signal-setup
-            asset_name: signal-setup-macos-silicon
-
-          # Windows x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+          # Windows x86_64 (cross-compiled via MinGW — no Windows runners on Codeberg)
+          - target: x86_64-pc-windows-gnu
             artifact_name: signal-setup.exe
             asset_name: signal-setup-windows-amd64.exe
+            cross: true
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+            --default-toolchain stable \
+            --target ${{ matrix.target }} \
+            --no-modify-path
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
 
       - name: Install cross-compilation tools
-        if: matrix.cross
+        if: ${{ matrix.cross }}
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux' && !matrix.cross
+        if: ${{ !matrix.cross }}
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
@@ -85,22 +76,17 @@ jobs:
           key: ${{ runner.os }}-cargo-build-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build with cross
-        if: matrix.cross
+        if: ${{ matrix.cross }}
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Build
         if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Rename binary
         run: |
-          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/${{ matrix.asset_name }}
-
-      - name: Rename binary (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          Move-Item -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -Destination target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
+             target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -111,9 +97,7 @@ jobs:
   create-release:
     name: Create Release
     needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    runs-on: codeberg-medium
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -126,12 +110,38 @@ jobs:
       - name: List artifacts
         run: ls -R artifacts/
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: artifacts/*/*
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+      - name: Create release and upload assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          # Create release via Forgejo API
+          RELEASE=$(curl -s -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
+            -d "{
+              \"tag_name\": \"${{ github.ref_name }}\",
+              \"name\": \"Release ${{ github.ref_name }}\",
+              \"draft\": false,
+              \"prerelease\": false
+            }")
+
+          echo "Release response: $RELEASE"
+          RELEASE_ID=$(echo "$RELEASE" | jq -r '.id')
+
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "Failed to create release"
+            exit 1
+          fi
+
+          # Upload each artifact
+          for file in artifacts/*/*; do
+            [ -f "$file" ] || continue
+            FILENAME=$(basename "$file")
+            echo "Uploading ${FILENAME}..."
+            curl -s -X POST \
+              -H "Authorization: token ${FORGEJO_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${FILENAME}" \
+              --data-binary @"$file"
+          done
