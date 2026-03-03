@@ -11,9 +11,8 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    # Codeberg provides: codeberg-tiny (1CPU/2GB/2min), codeberg-small (2CPU/4GB/5min),
-    # codeberg-medium (4CPU/8GB/10min). Use medium; cache hits are needed to stay under limit.
-    runs-on: codeberg-medium
+    # Auto-detect platform: GitHub uses ubuntu-latest, Codeberg uses codeberg-medium
+    runs-on: ${{ contains(github.server_url, 'github.com') && 'ubuntu-latest' || 'codeberg-medium' }}
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +28,7 @@ jobs:
             asset_name: signal-setup-linux-arm64
             cross: true
 
-          # Windows x86_64 (cross-compiled via MinGW — no Windows runners on Codeberg)
+          # Windows x86_64 (cross-compiled via MinGW)
           - target: x86_64-pc-windows-gnu
             artifact_name: signal-setup.exe
             asset_name: signal-setup-windows-amd64.exe
@@ -97,7 +96,9 @@ jobs:
   create-release:
     name: Create Release
     needs: build
-    runs-on: codeberg-medium
+    runs-on: ${{ contains(github.server_url, 'github.com') && 'ubuntu-latest' || 'codeberg-medium' }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -110,11 +111,24 @@ jobs:
       - name: List artifacts
         run: ls -R artifacts/
 
-      - name: Create release and upload assets
+      # GitHub
+      - name: Create GitHub Release
+        if: ${{ contains(github.server_url, 'github.com') }}
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Codeberg / Forgejo
+      - name: Create Forgejo Release
+        if: ${{ !contains(github.server_url, 'github.com') }}
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          # Create release via Forgejo API
           RELEASE=$(curl -s -X POST \
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -134,7 +148,6 @@ jobs:
             exit 1
           fi
 
-          # Upload each artifact
           for file in artifacts/*/*; do
             [ -f "$file" ] || continue
             FILENAME=$(basename "$file")
