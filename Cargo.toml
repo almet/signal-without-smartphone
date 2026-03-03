@@ -1,0 +1,24 @@
+[package]
+name = "signal-setup"
+version = "0.1.0"
+description = "Signal Desktop setup tool for users without smartphones"
+authors = ["almet"]
+edition = "2021"
+
+[[bin]]
+name = "signal-setup"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.30", default-features = true }
+egui = "0.30"
+image = "0.25"
+rxing = "0.6"
+arboard = "3.4"
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Enable Link Time Optimization
+codegen-units = 1   # Better optimization, slower compile
+strip = true        # Strip symbols from binary
+panic = "abort"     # Reduce binary size by removing panic unwinding
