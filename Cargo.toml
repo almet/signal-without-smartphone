@@ -1,6 +1,6 @@
 [package]
 name = "signal-setup"
-version = "0.1.0"
+version = "2.0.0"
 description = "Signal Desktop setup tool for users without smartphones"
 authors = ["almet"]
 edition = "2021"
