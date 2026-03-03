@@ -7,7 +7,7 @@ Signal Desktop without requiring a smartphone.
 need of a *smart* phone, but will still require a phone able to receive SMS
 messages.*
 
-Grab [https://github.com/almet/signal-without-smartphone/releases](the latest release)!
+Grab [the latest release!](https://github.com/almet/signal-without-smartphone/releases)
 
 ## Want to build it yourself?
 
