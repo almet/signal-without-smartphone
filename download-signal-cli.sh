@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-SIGNAL_CLI_VERSION="v0.13.22"
+SIGNAL_CLI_VERSION="v0.13.24"
 BASE_URL="https://github.com/AsamK/signal-cli/releases/download/${SIGNAL_CLI_VERSION}"
 
 # Create directory for signal-cli binaries

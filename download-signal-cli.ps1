@@ -1,7 +1,7 @@
 # PowerShell script for Windows
 $ErrorActionPreference = "Stop"
 
-$SIGNAL_CLI_VERSION = "v0.13.22"
+$SIGNAL_CLI_VERSION = "v0.13.24"
 $VERSION_NUMBER = $SIGNAL_CLI_VERSION.Substring(1)
 $BASE_URL = "https://github.com/AsamK/signal-cli/releases/download/$SIGNAL_CLI_VERSION"
 # No Windows native build available, use Java version
