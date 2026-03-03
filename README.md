@@ -3,57 +3,34 @@
 A native GUI tool that helps you register a Signal account and link
 Signal Desktop without requiring a smartphone.
 
-*Signal requires access to phone number, though, so this utility avoids the need of a *smart* phone, but will still require a phone able to receive SMS messages.
+*Signal requires access to phone number, though, so this utility avoids the
+need of a *smart* phone, but will still require a phone able to receive SMS
+messages.*
 
-## How it works
+Grab [https://github.com/almet/signal-without-smartphone/releases](the latest release)!
 
-The tool provides a step-by-step wizard that talks **directly to Signal's HTTP
-API**. The steps are as follow:
-
-1. **Phone number** — enter your number with country code
-2. **Captcha** (if required) — open the captcha page in your browser, solve it,
-   copy the `signalcaptcha://` token and paste it in the tool
-3. **Verify** — enter the 6-digit SMS code
-4. **Link** — paste the `tsdevice://` URI from Signal Desktop's QR code
-
-Under the hood the tool:
-- Creates a registration session via `POST /v1/verification/session`
-- Generates fresh Curve25519 identity keys and Kyber-1024 post-quantum pre-keys
-- Signs pre-keys with XEdDSA (Signal's own signing scheme)
-- Registers the account via `POST /v1/registration`
-- Encrypts a provisioning message and delivers it to Signal Desktop via
-  `PUT /v1/provisioning/{uuid}`
-
-## Quick start
+## Want to build it yourself?
 
 ```bash
-# 1. Build the app
 cargo build --release
-
-# 2. Run it
 ./target/release/signal-setup
 ```
 
-See [QUICKSTART.md](QUICKSTART.md) for detailed per-platform instructions.
-
 ## Build requirements
 
-- **Rust** (latest stable) — install from [rustup.rs](https://rustup.rs/)
-- **Linux only** — a few system libraries for GPU/display:
+On Linux only, a few system libraries are useful for GPU/display:
 
-  ```bash
-  # Ubuntu / Debian
-  sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-      libxkbcommon-dev libssl-dev protobuf-compiler
+```bash
+# Ubuntu / Debian
+sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+libxkbcommon-dev libssl-dev protobuf-compiler
 
-  # Fedora
-  sudo dnf install libxcb-devel libxkbcommon-devel openssl-devel protobuf-compiler
+# Fedora
+sudo dnf install libxcb-devel libxkbcommon-devel openssl-devel protobuf-compiler
 
-  # Arch
-  sudo pacman -S libxcb libxkbcommon openssl protobuf
-  ```
-
-No Node.js, no npm, no webview, no Java — just Rust.
+# Arch
+sudo pacman -S libxcb libxkbcommon openssl protobuf
+```
 
 ## License
 
@@ -74,11 +51,3 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ```
-
-## Credits
-
-- GUI built with [egui](https://github.com/emilk/egui) /
-  [eframe](https://github.com/emilk/egui/tree/master/crates/eframe)
-- Cryptography: [x25519-dalek](https://github.com/dalek-cryptography/x25519-dalek),
-  [xeddsa](https://codeberg.org/SpotNuts/xeddsa),
-  [pqcrypto-kyber](https://github.com/rustpq/pqcrypto)
