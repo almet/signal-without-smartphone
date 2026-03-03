@@ -102,8 +102,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Intel — native build on Intel runner
-          - os: macos-13
+          # macOS Intel — cross-compiled on Apple Silicon runner
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: signal-setup
             asset_name: signal-setup-macos-intel
