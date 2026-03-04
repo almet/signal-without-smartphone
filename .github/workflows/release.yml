@@ -11,9 +11,7 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    # Auto-detect platform: GitHub uses matrix OS, Codeberg uses codeberg-medium
-    runs-on: ${{ contains(github.server_url, 'github.com') && matrix.os || 'codeberg-medium' }}
-    if: ${{ !matrix.github_only || contains(github.server_url, 'github.com') }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +27,6 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-arm64
-            github_only: true
 
           # Windows x86_64 (native)
           - os: windows-latest
@@ -98,8 +95,6 @@ jobs:
 
   build-macos:
     name: Build ${{ matrix.target }}
-    # macOS runners are only available on GitHub — skipped entirely on Codeberg
-    if: ${{ contains(github.server_url, 'github.com') }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -167,9 +162,7 @@ jobs:
   create-release:
     name: Create Release
     needs: [build, build-macos]
-    # Run if linux/windows builds succeeded; allow build-macos to be skipped (Codeberg)
-    if: ${{ always() && needs.build.result == 'success' && (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') }}
-    runs-on: ${{ contains(github.server_url, 'github.com') && 'ubuntu-latest' || 'codeberg-medium' }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -184,9 +177,7 @@ jobs:
       - name: List artifacts
         run: ls -R artifacts/
 
-      # GitHub
       - name: Create GitHub Release
-        if: ${{ contains(github.server_url, 'github.com') }}
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/*/*
@@ -195,43 +186,3 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Codeberg / Forgejo
-      - name: Create Forgejo Release
-        if: ${{ !contains(github.server_url, 'github.com') }}
-        env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-        run: |
-          GITHUB_TAG="${{ github.ref_name }}"
-          GITHUB_RELEASE_BASE="https://github.com/almet/signal-without-smartphone/releases/download/${GITHUB_TAG}"
-          RELEASE_BODY=$'macOS downloads (hosted on GitHub):\n- Intel (x86_64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-intel"$'\n- Apple Silicon (arm64): '"${GITHUB_RELEASE_BASE}/signal-setup-macos-silicon"
-
-          RELEASE_PAYLOAD=$(jq -n \
-            --arg tag "${GITHUB_TAG}" \
-            --arg body "${RELEASE_BODY}" \
-            '{tag_name: $tag, name: ("Release " + $tag), draft: false, prerelease: false, body: $body}')
-
-          RELEASE=$(curl -s -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H "Content-Type: application/json" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
-            -d "${RELEASE_PAYLOAD}")
-
-          echo "Release response: $RELEASE"
-          RELEASE_ID=$(echo "$RELEASE" | jq -r '.id')
-
-          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
-            echo "Failed to create release"
-            exit 1
-          fi
-
-          for file in artifacts/*/*; do
-            [ -f "$file" ] || continue
-            FILENAME=$(basename "$file")
-            echo "Uploading ${FILENAME}..."
-            curl -s -X POST \
-              -H "Authorization: token ${FORGEJO_TOKEN}" \
-              -H "Content-Type: application/octet-stream" \
-              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${FILENAME}" \
-              --data-binary @"$file"
-          done
