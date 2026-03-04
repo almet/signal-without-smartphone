@@ -11,81 +11,84 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.target }}
-    # Auto-detect platform: GitHub uses ubuntu-latest, Codeberg uses codeberg-medium
-    runs-on: ${{ contains(github.server_url, 'github.com') && 'ubuntu-latest' || 'codeberg-medium' }}
+    # Auto-detect platform: GitHub uses matrix OS, Codeberg uses codeberg-medium
+    runs-on: ${{ contains(github.server_url, 'github.com') && matrix.os || 'codeberg-medium' }}
+    if: ${{ !matrix.github_only || contains(github.server_url, 'github.com') }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # Linux x86_64 (native)
-          - target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-amd64
 
-          # Linux ARM64 (cross-compiled)
-          - target: aarch64-unknown-linux-gnu
+          # Linux ARM64 (native)
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-arm64
-            cross: true
+            github_only: true
 
-          # Windows x86_64 (cross-compiled via MinGW)
-          - target: x86_64-pc-windows-gnu
+          # Windows x86_64 (native)
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
             artifact_name: signal-setup.exe
             asset_name: signal-setup-windows-amd64.exe
-            cross: true
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-            --default-toolchain stable \
-            --target ${{ matrix.target }} \
-            --no-modify-path
-          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
-
-      - name: Install cross-compilation tools
-        if: ${{ matrix.cross }}
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: ${{ !matrix.cross }}
+        if: ${{ runner.os == 'Linux' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev protobuf-compiler
 
+      - name: Install Windows dependencies
+        if: ${{ runner.os == 'Windows' }}
+        run: choco install protoc --no-progress
+
       - name: Cache cargo registry
+        if: ${{ runner.os != 'Windows' }}
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo index
+        if: ${{ runner.os != 'Windows' }}
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo build
+        if: ${{ runner.os != 'Windows' }}
         uses: actions/cache@v4
         with:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build with cross
-        if: ${{ matrix.cross }}
-        run: cross build --release --target ${{ matrix.target }}
-
       - name: Build
-        if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename binary
+        if: ${{ runner.os != 'Windows' }}
         run: |
           mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
              target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+
+      - name: Rename binary (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        run: Move-Item -Path "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination "target/${{ matrix.target }}/release/${{ matrix.asset_name }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
