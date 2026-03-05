@@ -3,6 +3,8 @@
 A Desktop application to register an account with Signal and link it with
 Signal Desktop, all without without requiring a smartphone.
 
+![Capture of the interface](interface.png)
+
 Because it shouldn't be required to install Signal on a phone in order to use it!
 
 *Note that Signal still requires a phone number to be used. This utility avoids the
