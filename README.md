@@ -5,8 +5,6 @@ Signal Desktop, all without without requiring a smartphone.
 
 ![Capture of the interface](interface.png)
 
-Because it shouldn't be required to install Signal on a phone in order to use it!
-
 *Note that Signal still requires a phone number to be used. This utility avoids the
 need of a *smart*phone, but will still require a phone able to receive SMS
 messages during the setup phase*
@@ -15,12 +13,19 @@ Grab [the latest release!](https://github.com/almet/signal-without-smartphone/re
 
 ## But, why?
 
-There are multiple reasons why this might be interesting:
+There are multiple reasons why this tool might be interesting to you:
 
-1. Some people don't have a smartphone, and they should be able to use Signal
-2. Using a smartphone to register Signal means that the security of your
-   messages will be as bad as the security of your smartphone. Because it's most
-   of the time in your pocket, you might not want this.
+### Don't compromise the security of your messages with a smartphone
+
+The security of your signal conversations is as low as the security of the devices on which it is installed:
+
+> If your device is lost or stolen when it’s not locked with your passcode, of course someone could read the messages on it. Likewise, law enforcement entities are known to use forensic tools to break into seized devices, making it possible to read anything on the device, including your messages.
+> 
+> — [Signal group safety, Freedom of the Press Foundation](https://freedom.press/digisec/blog/signal-group-safety/)
+
+### You might just don't have a smartphone
+
+Some people don't have a smartphone, and they should be able to use Signal :-)
 
 ## Want to build it yourself?
 
