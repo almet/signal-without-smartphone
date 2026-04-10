@@ -27,6 +27,18 @@ The security of your signal conversations is as low as the security of the devic
 
 Some people don't have a smartphone, and they should be able to use Signal :-)
 
+## Why a separate tool?
+
+Signal has no intention of supporting this use case in their own software.
+Standalone registration code does exist in Signal Desktop, but it is gated to
+development and staging builds only, and the maintainers have confirmed on
+their tracker that it is not meant for end users
+([#1118](https://github.com/signalapp/Signal-Desktop/issues/1118),
+[#551](https://github.com/signalapp/Signal-Desktop/issues/551),
+[#575](https://github.com/signalapp/Signal-Desktop/issues/575),
+[#6431](https://github.com/signalapp/Signal-Desktop/issues/6431)).
+That is why this separate tool exists.
+
 ## Want to build it yourself?
 
 ```bash
@@ -49,6 +61,29 @@ sudo dnf install libxcb-devel libxkbcommon-devel openssl-devel protobuf-compiler
 # Arch
 sudo pacman -S libxcb libxkbcommon openssl protobuf
 ```
+
+## Testing with Signal's staging server
+
+You can run the tool against Signal's staging environment instead of production,
+which is useful for development and testing without risking your real account:
+
+```bash
+./target/release/signal-setup --staging
+```
+
+To complete the device-linking step, you'll need a Signal Desktop instance also
+connected to the staging server. Building Signal Desktop from source does this
+by default:
+
+```bash
+git clone https://github.com/signalapp/Signal-Desktop.git
+cd Signal-Desktop
+pnpm install
+pnpm start
+```
+
+A `--demo` flag is also available for fully offline testing with fake data (no
+server needed).
 
 ## License
 

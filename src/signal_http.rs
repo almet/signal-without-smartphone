@@ -33,12 +33,9 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 
-// ── rand 0.9 ↔ rand_core 0.6 compatibility ───────────────────────────────────
-//
-// `libsignal-protocol` uses rand 0.9, while `x25519-dalek` and `xeddsa` still
-// use rand_core 0.6 traits. This wrapper bridges the two so a single `StdRng`
-// instance can be passed to both APIs.
-
+/// `libsignal-protocol` uses rand 0.9, while `x25519-dalek` and `xeddsa` still
+/// use rand_core 0.6 traits. This wrapper bridges the two so a single `StdRng`
+/// instance can be passed to both APIs.
 struct Rng06Compat<'a>(&'a mut StdRng);
 
 impl rand_core_06::RngCore for Rng06Compat<'_> {
@@ -53,11 +50,24 @@ impl rand_core_06::RngCore for Rng06Compat<'_> {
 
 impl rand_core_06::CryptoRng for Rng06Compat<'_> {}
 
-// ── Signal service base URL ────────────────────────────────────────────────────
+const SIGNAL_PROD: &str = "https://chat.signal.org";
+const SIGNAL_STAGING: &str = "https://chat.staging.signal.org";
 
-const SIGNAL_API: &str = "https://chat.signal.org";
+static USE_STAGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-// ── Inline protobuf types (avoids build.rs / protoc dependency) ───────────────
+pub fn enable_staging() {
+    USE_STAGING.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn signal_api() -> &'static str {
+    if USE_STAGING.load(std::sync::atomic::Ordering::Relaxed) {
+        SIGNAL_STAGING
+    } else {
+        SIGNAL_PROD
+    }
+}
+
+// Inline protobuf types below avoid a build.rs / protoc dependency.
 
 /// Signal's provisioning message, sent by a primary device to a secondary device.
 /// Field numbers match `Provisioning.proto` from Signal's repository.
@@ -106,7 +116,7 @@ struct ProvisionEnvelope {
     body: Option<Vec<u8>>,
 }
 
-// ── Signal Protocol wire types (for proactive post-link sync) ──────────────────
+// Signal Protocol wire types used for the proactive post-link sync below.
 
 /// Plaintext content wrapper before Signal Protocol encryption (SignalService.proto).
 #[derive(Clone, PartialEq, ProstMessage)]
@@ -161,7 +171,31 @@ pub struct SignalAccount {
     registration_id: u32,
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+impl SignalAccount {
+    /// Create a fake account for demo/testing purposes.
+    pub fn dummy(phone: &str) -> Self {
+        use rand::rngs::StdRng;
+        use rand::{RngCore, SeedableRng};
+        let mut rng = StdRng::from_os_rng();
+        let aci_identity = IdentityKeyPair::generate(&mut rng);
+        let pni_identity = IdentityKeyPair::generate(&mut rng);
+        let mut master_key = vec![0u8; 32];
+        rng.fill_bytes(&mut master_key);
+        let mut profile_key = vec![0u8; 32];
+        rng.fill_bytes(&mut profile_key);
+        Self {
+            phone: phone.to_string(),
+            password: "demo-password".into(),
+            aci_identity,
+            pni_identity,
+            aci: Some("demo-aci-uuid".into()),
+            pni: Some("demo-pni-uuid".into()),
+            master_key,
+            profile_key,
+            registration_id: 12345,
+        }
+    }
+}
 
 /// Error returned by all Signal API calls.
 #[derive(Debug, thiserror::Error)]
@@ -193,8 +227,6 @@ pub enum VerificationRequest {
     CaptchaRequired { session_id: String },
 }
 
-// ── Step 1: create a verification session (request SMS code) ─────────────────
-
 /// Ask Signal to start a registration session for `phone`.
 ///
 /// Returns `VerificationRequest::CaptchaRequired` if Signal wants the user to
@@ -205,7 +237,6 @@ pub fn request_verification_code(
 ) -> Result<VerificationRequest, SignalError> {
     let client = build_client();
 
-    // ── 1a. Create session ─────────────────────────────────────────────────
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct CreateSessionBody<'a> {
@@ -217,7 +248,7 @@ pub fn request_verification_code(
     }
 
     let resp = client
-        .post(format!("{SIGNAL_API}/v1/verification/session"))
+        .post(format!("{}/v1/verification/session", signal_api()))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
         .json(&CreateSessionBody {
@@ -230,47 +261,14 @@ pub fn request_verification_code(
         .send()?;
 
     let session: RegistrationSessionResponse = parse_response(resp)?;
-    let session_id = session.id.clone();
 
-    // ── 1b. Submit captcha if already provided ─────────────────────────────
     let session = if let Some(token) = captcha {
-        patch_session_with_captcha(&client, &session_id, token)?
+        patch_session_with_captcha(&client, &session.id, token)?
     } else {
         session
     };
 
-    // ── 1c. Check if captcha is still needed ───────────────────────────────
-    if session.captcha_required() {
-        return Ok(VerificationRequest::CaptchaRequired { session_id });
-    }
-
-    // ── 1d. Request the SMS code ───────────────────────────────────────────
-    if !session.allowed_to_request_code {
-        return Err(SignalError::Other(
-            "Server does not allow requesting a code at this time.".into(),
-        ));
-    }
-
-    #[derive(Serialize)]
-    struct RequestCodeBody {
-        client: &'static str,
-        transport: &'static str,
-    }
-
-    let resp = client
-        .post(format!(
-            "{SIGNAL_API}/v1/verification/session/{session_id}/code"
-        ))
-        .header("Content-Type", "application/json")
-        .header("X-Signal-Agent", "OWD")
-        .json(&RequestCodeBody {
-            client: "ows",
-            transport: "sms",
-        })
-        .send()?;
-
-    let _ = parse_response::<RegistrationSessionResponse>(resp)?;
-    Ok(VerificationRequest::CodeSent { session_id })
+    finalize_session_request(&client, session)
 }
 
 /// Submit a captcha token and retrieve the updated session.
@@ -280,13 +278,20 @@ pub fn submit_captcha(
 ) -> Result<VerificationRequest, SignalError> {
     let client = build_client();
     let session = patch_session_with_captcha(&client, session_id, captcha_token)?;
+    finalize_session_request(&client, session)
+}
 
+/// Given a session, either return that captcha is still required or POST the
+/// SMS code request and return `CodeSent`.
+fn finalize_session_request(
+    client: &Client,
+    session: RegistrationSessionResponse,
+) -> Result<VerificationRequest, SignalError> {
     if session.captcha_required() {
         return Ok(VerificationRequest::CaptchaRequired {
             session_id: session.id,
         });
     }
-
     if !session.allowed_to_request_code {
         return Err(SignalError::Other(
             "Server does not allow requesting a code at this time.".into(),
@@ -301,7 +306,9 @@ pub fn submit_captcha(
 
     let resp = client
         .post(format!(
-            "{SIGNAL_API}/v1/verification/session/{session_id}/code"
+            "{}/v1/verification/session/{}/code",
+            signal_api(),
+            session.id
         ))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
@@ -316,8 +323,6 @@ pub fn submit_captcha(
         session_id: session.id,
     })
 }
-
-// ── Step 2: verify code and register ─────────────────────────────────────────
 
 /// Verify the user-supplied `code` and register the account with Signal.
 ///
@@ -335,7 +340,6 @@ pub fn verify_and_register(
     let client = build_client();
     let mut rng = StdRng::from_os_rng();
 
-    // ── 2a. Submit the verification code ──────────────────────────────────
     #[derive(Serialize)]
     struct SubmitCodeBody<'a> {
         code: &'a str,
@@ -347,7 +351,7 @@ pub fn verify_and_register(
 
     let resp = client
         .put(format!(
-            "{SIGNAL_API}/v1/verification/session/{session_id}/code"
+            "{}/v1/verification/session/{session_id}/code", signal_api()
         ))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
@@ -356,8 +360,7 @@ pub fn verify_and_register(
 
     // 409 means the session is already verified (happens on retries after a
     // DeviceTransferAvailable response).
-    let already_verified = resp.status().as_u16() == 409;
-    let verified: SubmitCodeResponse = if already_verified {
+    let verified: SubmitCodeResponse = if resp.status().as_u16() == 409 {
         let body: serde_json::Value = resp.json().unwrap_or_default();
         SubmitCodeResponse {
             verified: body.get("verified").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -369,14 +372,11 @@ pub fn verify_and_register(
         return Err(SignalError::Other("Verification code was not accepted.".into()));
     }
 
-    // ── 2b. Generate account credentials ─────────────────────────────────
     let password = random_password(&mut rng);
-
-    // ── 2c. Generate identity key pairs using libsignal-protocol ──────────
     let aci_identity = IdentityKeyPair::generate(&mut rng);
     let pni_identity = IdentityKeyPair::generate(&mut rng);
 
-    // ── 2d. Generate signed pre-keys (Curve25519) ─────────────────────────
+    // Curve25519 signed pre-keys.
     let aci_spk_pair = sigprot::KeyPair::generate(&mut rng);
     let aci_spk_sig = aci_identity
         .private_key()
@@ -389,7 +389,7 @@ pub fn verify_and_register(
         .calculate_signature(&pni_spk_pair.public_key.serialize(), &mut rng)
         .map_err(|e| SignalError::Other(format!("sign PNI SPK: {e}")))?;
 
-    // ── 2e. Generate Kyber-1024 last-resort pre-keys ──────────────────────
+    // Kyber-1024 last-resort pre-keys.
     let aci_kyber = sigprot::kem::KeyPair::generate(sigprot::kem::KeyType::Kyber1024, &mut rng);
     let aci_kyber_sig = aci_identity
         .private_key()
@@ -402,7 +402,6 @@ pub fn verify_and_register(
         .calculate_signature(&pni_kyber.public_key.serialize(), &mut rng)
         .map_err(|e| SignalError::Other(format!("sign PNI Kyber: {e}")))?;
 
-    // ── 2f. Other account attributes ─────────────────────────────────────
     let registration_id: u32 = rng.random_range(1..=16383);
     let pni_registration_id: u32 = rng.random_range(1..=16383);
     let mut unidentified_access_key = [0u8; 16];
@@ -414,7 +413,6 @@ pub fn verify_and_register(
     let mut profile_key = vec![0u8; 32];
     rng.fill_bytes(&mut profile_key);
 
-    // ── 2g. Build and send the registration request ───────────────────────
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct AccountAttributes {
@@ -432,9 +430,9 @@ pub fn verify_and_register(
     #[serde(rename_all = "camelCase")]
     struct Capabilities {
         storage: bool,
-        transfer: bool,
-        delete_sync: bool,
         versioned_expiration_timer: bool,
+        attachment_backfill: bool,
+        spqr: bool,
     }
 
     #[derive(Serialize)]
@@ -476,9 +474,9 @@ pub fn verify_and_register(
             fetches_messages: true,
             capabilities: Capabilities {
                 storage: true,
-                transfer: true,
-                delete_sync: true,
                 versioned_expiration_timer: true,
+                attachment_backfill: true,
+                spqr: true,
             },
             unidentified_access_key: BASE64_STANDARD.encode(unidentified_access_key),
             unrestricted_unidentified_access: false,
@@ -514,7 +512,7 @@ pub fn verify_and_register(
     };
 
     let resp = client
-        .post(format!("{SIGNAL_API}/v1/registration"))
+        .post(format!("{}/v1/registration", signal_api()))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
         .basic_auth(phone, Some(&password))
@@ -549,8 +547,6 @@ pub fn verify_and_register(
     })
 }
 
-// ── Step 3: link Signal Desktop ───────────────────────────────────────────────
-
 /// Link Signal Desktop as a secondary device using a `tsdevice://` or
 /// `sgnl://linkdevice` URI decoded from its QR code.
 ///
@@ -559,7 +555,6 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
     let client = build_client();
     let mut rng = StdRng::from_os_rng();
 
-    // ── 3a. Parse the tsdevice:// URI ─────────────────────────────────────
     let (ephemeral_id, device_pub_key_bytes) = parse_device_uri(device_uri)?;
 
     // The key in the URI is DJB-encoded (0x05 prefix + 32 bytes).
@@ -583,7 +578,7 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
         SignalError::Other("ACI UUID is missing; cannot authenticate with Signal".into())
     })?;
 
-    // ── 3b. Obtain a provisioning code from Signal ────────────────────────
+    // Obtain a provisioning code from Signal.
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct DeviceCode {
@@ -591,13 +586,12 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
     }
 
     let resp = client
-        .get(format!("{SIGNAL_API}/v1/devices/provisioning/code"))
+        .get(format!("{}/v1/devices/provisioning/code", signal_api()))
         .header("X-Signal-Agent", "OWD")
         .basic_auth(aci, Some(&account.password))
         .send()?;
     let code: DeviceCode = parse_response(resp)?;
 
-    // ── 3c. Build the ProvisionMessage with all required fields ────────────
     let pni_plain = account
         .pni
         .as_deref()
@@ -627,7 +621,7 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
 
     let envelope = encrypt_provision_message(&msg, &device_pub, &mut rng)?;
 
-    // ── 3d. Send the encrypted envelope to Signal's provisioning endpoint ─
+    // Send the encrypted envelope to Signal's provisioning endpoint.
     #[derive(Serialize)]
     struct SendEnvelope {
         body: String,
@@ -636,7 +630,7 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
     let envelope_bytes = envelope.encode_to_vec();
     let resp = client
         .put(format!(
-            "{SIGNAL_API}/v1/provisioning/{ephemeral_id}"
+            "{}/v1/provisioning/{ephemeral_id}", signal_api()
         ))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
@@ -655,7 +649,6 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
         });
     }
 
-    // ── 3e. Proactively send empty sync to the new device ─────────────────
     // Signal Desktop waits for sync messages from device 1 after linking.
     // We send a SyncMessage{contacts.isComplete=true, blocked={}} so Desktop
     // knows sync is complete and transitions to the main screen.
@@ -664,8 +657,6 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
 
     Ok(())
 }
-
-// ── Step 3 helpers: proactive post-link sync using libsignal-protocol ─────────
 
 /// Parsed pre-key bundle for establishing a Signal Protocol session.
 struct DevicePreKeyBundle {
@@ -724,7 +715,7 @@ fn fetch_device_prekeys(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         let resp = client
-            .get(format!("{SIGNAL_API}/v2/keys/{aci}/{device_id}"))
+            .get(format!("{}/v2/keys/{aci}/{device_id}", signal_api()))
             .header("X-Signal-Agent", "OWD")
             .basic_auth(aci, Some(&account.password))
             .send()?;
@@ -878,7 +869,7 @@ fn send_linked_device_sync(
     };
 
     let resp = client
-        .put(format!("{SIGNAL_API}/v1/messages/{aci}"))
+        .put(format!("{}/v1/messages/{aci}", signal_api()))
         .header("X-Signal-Agent", "OWD")
         .basic_auth(aci, Some(&account.password))
         .json(&body)
@@ -981,22 +972,61 @@ async fn encrypt_with_libsignal(
     Ok(ciphertext)
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+/// Decode a single PEM certificate to DER bytes.
+fn pem_to_der(pem: &str) -> Vec<u8> {
+    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    BASE64_STANDARD
+        .decode(b64.trim())
+        .expect("Invalid base64 in embedded certificate")
+}
 
-/// Build a `reqwest` blocking client that pins Signal's server certificate.
+/// Build a `reqwest` blocking client.
+///
+/// In production mode the client pins Signal's leaf certificate. In staging
+/// mode it trusts only the Signal root CA (the staging server presents a
+/// different leaf certificate so leaf pinning would fail).
 fn build_client() -> Client {
+    let timeout = std::time::Duration::from_secs(30);
+
+    let tls_config = if USE_STAGING.load(std::sync::atomic::Ordering::Relaxed) {
+        build_staging_tls_config()
+    } else {
+        build_production_tls_config()
+    };
+
+    Client::builder()
+        .use_preconfigured_tls(tls_config)
+        .timeout(timeout)
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+fn build_staging_tls_config() -> rustls::ClientConfig {
+    use rustls::pki_types::CertificateDer;
+    use std::sync::Arc;
+
+    let ca_der = pem_to_der(include_str!("../signal-root-ca.crt"));
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store
+        .add(CertificateDer::from(ca_der))
+        .expect("Failed to add Signal root CA");
+
+    rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("Failed to set TLS protocol versions")
+    .with_root_certificates(root_store)
+    .with_no_client_auth()
+}
+
+fn build_production_tls_config() -> rustls::ClientConfig {
     use rustls::client::danger::{
         HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
     };
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
     use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
     use std::sync::Arc;
-
-    let pem = include_str!("../signal-root.crt");
-    let der_b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-    let pinned_der = BASE64_STANDARD
-        .decode(der_b64.trim())
-        .expect("Invalid base64 in signal-root.crt");
 
     #[derive(Debug)]
     struct PinnedCertVerifier {
@@ -1054,20 +1084,16 @@ fn build_client() -> Client {
         }
     }
 
-    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+    let pinned_der = pem_to_der(include_str!("../signal-root.crt"));
+
+    rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .expect("Failed to set TLS protocol versions")
     .dangerous()
     .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned_der }))
-    .with_no_client_auth();
-
-    Client::builder()
-        .use_preconfigured_tls(tls_config)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .expect("Failed to build HTTP client")
+    .with_no_client_auth()
 }
 
 /// Send a PATCH to update the verification session (e.g. submit a captcha).
@@ -1095,7 +1121,7 @@ fn patch_session_with_captcha(
 
     let resp = client
         .patch(format!(
-            "{SIGNAL_API}/v1/verification/session/{session_id}"
+            "{}/v1/verification/session/{session_id}", signal_api()
         ))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
@@ -1309,8 +1335,6 @@ fn encrypt_provision_message(
         body: Some(body),
     })
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -1,3 +1,4 @@
+mod signal_demo;
 mod signal_http;
 
 use arboard::Clipboard;
@@ -12,7 +13,68 @@ use signal_http::SignalAccount;
 use std::process::Command;
 use std::sync::mpsc;
 
-// ── Color palette ─────────────────────────────────────────────────────────────
+#[derive(Clone, Copy, PartialEq, Default)]
+enum Mode {
+    #[default]
+    Production,
+    Staging,
+    Demo,
+}
+
+static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+
+fn mode() -> Mode {
+    MODE.get().copied().unwrap_or_default()
+}
+
+// Dispatch helpers that route to signal_http or signal_demo based on the mode.
+mod api {
+    use super::*;
+    use signal_http::{SignalError, VerificationRequest};
+
+    pub fn request_verification_code(
+        phone: &str,
+        captcha: Option<&str>,
+    ) -> Result<VerificationRequest, SignalError> {
+        match mode() {
+            Mode::Demo => signal_demo::request_verification_code(phone, captcha),
+            _ => signal_http::request_verification_code(phone, captcha),
+        }
+    }
+
+    pub fn submit_captcha(
+        session_id: &str,
+        token: &str,
+    ) -> Result<VerificationRequest, SignalError> {
+        match mode() {
+            Mode::Demo => signal_demo::submit_captcha(session_id, token),
+            _ => signal_http::submit_captcha(session_id, token),
+        }
+    }
+
+    pub fn verify_and_register(
+        phone: &str,
+        session_id: &str,
+        code: &str,
+        skip_device_transfer: bool,
+    ) -> Result<SignalAccount, SignalError> {
+        match mode() {
+            Mode::Demo => {
+                signal_demo::verify_and_register(phone, session_id, code, skip_device_transfer)
+            }
+            _ => signal_http::verify_and_register(phone, session_id, code, skip_device_transfer),
+        }
+    }
+
+    pub fn link_device(account: &SignalAccount, uri: &str) -> Result<(), SignalError> {
+        match mode() {
+            Mode::Demo => signal_demo::link_device(account, uri),
+            _ => signal_http::link_device(account, uri),
+        }
+    }
+}
+
+// Color palette
 
 const SIGNAL_BLUE: egui::Color32 = egui::Color32::from_rgb(59, 130, 246);
 const SUCCESS_GREEN: egui::Color32 = egui::Color32::from_rgb(22, 163, 74);
@@ -31,7 +93,7 @@ const CARD_BG: egui::Color32 = egui::Color32::WHITE;
 const BORDER: egui::Color32 = egui::Color32::from_rgb(229, 231, 235);
 const INSET_BG: egui::Color32 = egui::Color32::from_rgb(249, 250, 251);
 
-// ── Step state machine ────────────────────────────────────────────────────────
+// Step state machine
 
 #[derive(Default, PartialEq, Clone, Copy)]
 enum Step {
@@ -55,7 +117,7 @@ impl Step {
     }
 }
 
-// ── Background-work result types ──────────────────────────────────────────────
+// Background-work result types
 
 enum WorkResult {
     RegisterOk { session_id: String },
@@ -68,7 +130,7 @@ enum WorkResult {
     LinkError(String),
 }
 
-// ── Status banner ─────────────────────────────────────────────────────────────
+// Status banner
 
 #[derive(Default, Clone)]
 enum Status {
@@ -79,8 +141,9 @@ enum Status {
     Error(String),
 }
 
-// ── App state ─────────────────────────────────────────────────────────────────
+// App state
 
+#[derive(Default)]
 struct SignalSetupApp {
     step: Step,
     phone: String,
@@ -102,35 +165,7 @@ struct SignalSetupApp {
 impl SignalSetupApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
-        Self {
-            step: Step::default(),
-            phone: String::new(),
-            captcha_token: String::new(),
-            verification_code: String::new(),
-            device_uri: String::new(),
-            status: Status::None,
-            loading: false,
-            session_id: None,
-            signal_account: None,
-            result_rx: None,
-            device_transfer_available: false,
-        }
-    }
-
-    fn new_empty() -> Self {
-        Self {
-            step: Step::default(),
-            phone: String::new(),
-            captcha_token: String::new(),
-            verification_code: String::new(),
-            device_uri: String::new(),
-            status: Status::None,
-            loading: false,
-            session_id: None,
-            signal_account: None,
-            result_rx: None,
-            device_transfer_available: false,
-        }
+        Self::default()
     }
 
     fn spawn<F>(&mut self, ctx: egui::Context, f: F)
@@ -153,8 +188,6 @@ impl SignalSetupApp {
         Some(result)
     }
 }
-
-// ── eframe::App implementation ────────────────────────────────────────────────
 
 impl eframe::App for SignalSetupApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -201,7 +234,6 @@ impl eframe::App for SignalSetupApp {
             }
         }
 
-        // ── Header panel ──────────────────────────────────────────────────────
         let step_num = self.step.number();
         egui::TopBottomPanel::top("header")
             .frame(
@@ -227,7 +259,6 @@ impl eframe::App for SignalSetupApp {
                 draw_step_indicator(ui, step_num);
             });
 
-        // ── Main content ──────────────────────────────────────────────────────
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
@@ -272,7 +303,7 @@ impl eframe::App for SignalSetupApp {
     }
 }
 
-// ── Per-step UI panels ────────────────────────────────────────────────────────
+// Per-step UI panels
 
 impl SignalSetupApp {
     fn ui_phone(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -297,7 +328,7 @@ impl SignalSetupApp {
         {
             let phone = self.phone.clone();
             self.spawn(ctx.clone(), move || {
-                match signal_http::request_verification_code(&phone, None) {
+                match api::request_verification_code(&phone, None) {
                     Ok(signal_http::VerificationRequest::CodeSent { session_id }) => {
                         WorkResult::RegisterOk { session_id }
                     }
@@ -360,7 +391,7 @@ impl SignalSetupApp {
             let session_id = self.session_id.clone().unwrap_or_default();
             let token = self.captcha_token.trim().to_string();
             self.spawn(ctx.clone(), move || {
-                match signal_http::submit_captcha(&session_id, &token) {
+                match api::submit_captcha(&session_id, &token) {
                     Ok(signal_http::VerificationRequest::CodeSent { session_id }) => {
                         WorkResult::RegisterOk { session_id }
                     }
@@ -386,7 +417,7 @@ impl SignalSetupApp {
                 .inner_margin(egui::Margin::same(14.0))
                 .show(ui, |ui| {
                     ui.label(
-                        RichText::new("⚠️  Device Transfer Available")
+                        RichText::new("\u{26A0}  Device Transfer Available")
                             .strong()
                             .color(egui::Color32::from_rgb(154, 52, 18))
                             .size(14.0),
@@ -425,7 +456,7 @@ impl SignalSetupApp {
                         let code = self.verification_code.clone();
                         self.device_transfer_available = false;
                         self.spawn(ctx.clone(), move || {
-                            match signal_http::verify_and_register(
+                            match api::verify_and_register(
                                 &phone,
                                 &session_id,
                                 &code,
@@ -469,7 +500,7 @@ impl SignalSetupApp {
             let code = self.verification_code.clone();
             self.device_transfer_available = false;
             self.spawn(ctx.clone(), move || {
-                match signal_http::verify_and_register(&phone, &session_id, &code, false) {
+                match api::verify_and_register(&phone, &session_id, &code, false) {
                     Ok(account) => WorkResult::VerifyOk { account },
                     Err(signal_http::SignalError::DeviceTransferAvailable) => {
                         WorkResult::DeviceTransferAvailable
@@ -548,7 +579,7 @@ impl SignalSetupApp {
             let account = self.signal_account.clone().unwrap();
             let uri = self.device_uri.trim().to_string();
             self.spawn(ctx.clone(), move || {
-                match signal_http::link_device(&account, &uri) {
+                match api::link_device(&account, &uri) {
                     Ok(()) => WorkResult::LinkOk,
                     Err(e) => WorkResult::LinkError(e.to_string()),
                 }
@@ -583,14 +614,14 @@ impl SignalSetupApp {
                 )
                 .clicked()
             {
-                *self = SignalSetupApp::new_empty();
+                *self = SignalSetupApp::default();
             }
         });
         ui.add_space(16.0);
     }
 }
 
-// ── UI helpers ────────────────────────────────────────────────────────────────
+// UI helpers
 
 fn setup_style(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
@@ -721,9 +752,9 @@ fn draw_step_indicator(ui: &mut egui::Ui, current: usize) {
 fn show_status(ui: &mut egui::Ui, status: &Status) {
     let (icon, text, text_color, bg, border) = match status {
         Status::None => return,
-        Status::Error(m) => ("⚠️", m.as_str(), ERROR_RED, ERROR_BG, ERROR_BORDER),
-        Status::Success(m) => ("✅", m.as_str(), SUCCESS_GREEN, SUCCESS_BG, SUCCESS_BORDER),
-        Status::Info(m) => ("ℹ️", m.as_str(), INFO_TEXT, INFO_BG, INFO_BORDER),
+        Status::Error(m) => ("\u{26A0}", m.as_str(), ERROR_RED, ERROR_BG, ERROR_BORDER),
+        Status::Success(m) => ("\u{2713}", m.as_str(), SUCCESS_GREEN, SUCCESS_BG, SUCCESS_BORDER),
+        Status::Info(m) => ("\u{2139}", m.as_str(), INFO_TEXT, INFO_BG, INFO_BORDER),
     };
 
     egui::Frame::none()
@@ -780,8 +811,6 @@ fn submit_row(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool {
     clicked
 }
 
-// ── URL helpers ───────────────────────────────────────────────────────────────
-
 /// Open a URL in the system default browser, cross-platform.
 fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
@@ -794,194 +823,98 @@ fn open_url(url: &str) {
     let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
 }
 
-// ── QR Code decoding helpers ──────────────────────────────────────────────────
+// QR Code decoding helpers
 
-/// Try to decode QR code from a grayscale image using rxing (robust for branded QR codes)
+/// Try to decode a QR code from a grayscale image using rxing.
 fn try_decode_gray(gray: &image::GrayImage) -> Option<String> {
-    let dynamic_img = DynamicImage::ImageLuma8(gray.clone());
-
-    // Convert to luminance source using BufferedImageLuminanceSource
-    let lum_source = BufferedImageLuminanceSource::new(dynamic_img);
-
-    // Create hybrid binarizer for better accuracy
-    let binarizer = HybridBinarizer::new(lum_source);
-
-    // Create binary bitmap (mutable for decode)
-    let mut bitmap = BinaryBitmap::new(binarizer);
-
-    // Create reader with try_harder hints
+    let lum_source = BufferedImageLuminanceSource::new(DynamicImage::ImageLuma8(gray.clone()));
+    let mut bitmap = BinaryBitmap::new(HybridBinarizer::new(lum_source));
     let mut hints = std::collections::HashMap::new();
     hints.insert(DecodeHintType::TRY_HARDER, DecodeHintValue::TryHarder(true));
-
-    // Try to decode
-    let mut reader = MultiFormatReader::default();
-    match reader.decode_with_hints(&mut bitmap, &hints) {
-        Ok(result) => Some(result.getText().to_string()),
-        Err(_) => None,
-    }
+    MultiFormatReader::default()
+        .decode_with_hints(&mut bitmap, &hints)
+        .ok()
+        .map(|r| r.getText().to_string())
 }
 
-/// Apply binary thresholding to an image
+fn invert(gray: &image::GrayImage) -> image::GrayImage {
+    let mut out = gray.clone();
+    for p in out.pixels_mut() {
+        p.0[0] = 255 - p.0[0];
+    }
+    out
+}
+
 fn apply_threshold(gray: &image::GrayImage, threshold: u8) -> image::GrayImage {
-    let mut result = gray.clone();
-    for pixel in result.pixels_mut() {
-        pixel.0[0] = if pixel.0[0] > threshold { 255 } else { 0 };
+    let mut out = gray.clone();
+    for p in out.pixels_mut() {
+        p.0[0] = if p.0[0] > threshold { 255 } else { 0 };
     }
-    result
+    out
 }
 
-/// Adjust brightness and contrast
 fn adjust_brightness_contrast(
     gray: &image::GrayImage,
     brightness: i32,
     contrast: f32,
 ) -> image::GrayImage {
-    let mut result = gray.clone();
-    for pixel in result.pixels_mut() {
-        let value = pixel.0[0] as i32;
-        let adjusted = ((value - 128) as f32 * contrast) as i32 + 128 + brightness;
-        pixel.0[0] = adjusted.clamp(0, 255) as u8;
+    let mut out = gray.clone();
+    for p in out.pixels_mut() {
+        let v = ((p.0[0] as i32 - 128) as f32 * contrast) as i32 + 128 + brightness;
+        p.0[0] = v.clamp(0, 255) as u8;
     }
-    result
+    out
 }
 
-/// Decode QR code from an image with multiple preprocessing attempts.
+fn upscale(gray: &image::GrayImage, scale: u32) -> image::GrayImage {
+    image::imageops::resize(
+        gray,
+        gray.width() * scale,
+        gray.height() * scale,
+        image::imageops::FilterType::Nearest,
+    )
+}
+
+/// Decode a QR code, trying a series of preprocessing variants for robustness.
 fn decode_qr_from_image(img: &DynamicImage) -> Result<String, String> {
     let gray = img.to_luma8();
 
-    eprintln!(
-        "Trying to decode QR code with {} different preprocessing methods...",
-        20
-    );
+    let try_it = |g: image::GrayImage| -> Option<String> { try_decode_gray(&g) };
 
-    // Try 1: Original image
-    eprintln!("  [1/20] Original image");
-    if let Some(content) = try_decode_gray(&gray) {
-        eprintln!("  ✓ Success!");
-        return Ok(content);
-    }
+    if let Some(s) = try_it(gray.clone()) { return Ok(s); }
+    if let Some(s) = try_it(invert(&gray)) { return Ok(s); }
 
-    // Try 2: Inverted colors
-    eprintln!("  [2/20] Inverted colors");
-    let mut inverted = gray.clone();
-    for pixel in inverted.pixels_mut() {
-        pixel.0[0] = 255 - pixel.0[0];
+    for t in [100u8, 128, 150, 180, 200] {
+        if let Some(s) = try_it(apply_threshold(&gray, t)) { return Ok(s); }
     }
-    if let Some(content) = try_decode_gray(&inverted) {
-        eprintln!("  ✓ Success!");
-        return Ok(content);
+    for (b, c) in [(20, 1.5_f32), (-20, 1.5), (0, 2.0)] {
+        if let Some(s) = try_it(adjust_brightness_contrast(&gray, b, c)) { return Ok(s); }
     }
-
-    // Try 3-7: Different threshold values
-    for (i, threshold) in [100u8, 128, 150, 180, 200].iter().enumerate() {
-        eprintln!("  [{}/20] Binary threshold {}", i + 3, threshold);
-        let thresholded = apply_threshold(&gray, *threshold);
-        if let Some(content) = try_decode_gray(&thresholded) {
-            eprintln!("  ✓ Success!");
-            return Ok(content);
+    for scale in [2u32, 3, 4] {
+        if let Some(s) = try_it(upscale(&gray, scale)) { return Ok(s); }
+    }
+    for (scale, t) in [(2u32, 128u8), (3, 128), (2, 150)] {
+        if let Some(s) = try_it(apply_threshold(&upscale(&gray, scale), t)) { return Ok(s); }
+    }
+    for (scale, b, c) in [(2u32, 0, 2.0_f32), (3, 0, 2.0)] {
+        if let Some(s) = try_it(adjust_brightness_contrast(&upscale(&gray, scale), b, c)) {
+            return Ok(s);
         }
     }
-
-    // Try 8-10: Brightness/contrast adjustments
-    for (i, (brightness, contrast)) in [(20, 1.5), (-20, 1.5), (0, 2.0)].iter().enumerate() {
-        eprintln!(
-            "  [{}/20] Brightness {} Contrast {}",
-            i + 8,
-            brightness,
-            contrast
-        );
-        let adjusted = adjust_brightness_contrast(&gray, *brightness, *contrast);
-        if let Some(content) = try_decode_gray(&adjusted) {
-            eprintln!("  ✓ Success!");
-            return Ok(content);
-        }
-    }
-
-    // Try 11-13: Upscaled versions
-    for (i, scale) in [2, 3, 4].iter().enumerate() {
-        eprintln!("  [{}/20] Upscaled {}x", i + 11, scale);
-        let upscaled = image::imageops::resize(
-            &gray,
-            gray.width() * scale,
-            gray.height() * scale,
-            image::imageops::FilterType::Nearest,
-        );
-        if let Some(content) = try_decode_gray(&upscaled) {
-            eprintln!("  ✓ Success!");
-            return Ok(content);
-        }
-    }
-
-    // Try 14-16: Upscaled + threshold
-    for (i, (scale, threshold)) in [(2, 128u8), (3, 128), (2, 150)].iter().enumerate() {
-        eprintln!(
-            "  [{}/20] Upscaled {}x + threshold {}",
-            i + 14,
-            scale,
-            threshold
-        );
-        let upscaled = image::imageops::resize(
-            &gray,
-            gray.width() * scale,
-            gray.height() * scale,
-            image::imageops::FilterType::Nearest,
-        );
-        let thresholded = apply_threshold(&upscaled, *threshold);
-        if let Some(content) = try_decode_gray(&thresholded) {
-            eprintln!("  ✓ Success!");
-            return Ok(content);
-        }
-    }
-
-    // Try 17-18: Upscaled + brightness/contrast
-    for (i, (scale, brightness, contrast)) in [(2, 0, 2.0), (3, 0, 2.0)].iter().enumerate() {
-        eprintln!(
-            "  [{}/20] Upscaled {}x + brightness {} contrast {}",
-            i + 17,
-            scale,
-            brightness,
-            contrast
-        );
-        let upscaled = image::imageops::resize(
-            &gray,
-            gray.width() * scale,
-            gray.height() * scale,
-            image::imageops::FilterType::Nearest,
-        );
-        let adjusted = adjust_brightness_contrast(&upscaled, *brightness, *contrast);
-        if let Some(content) = try_decode_gray(&adjusted) {
-            eprintln!("  ✓ Success!");
-            return Ok(content);
-        }
-    }
-
-    // Try 19: Downscaled (for very large images)
     if gray.width() > 800 || gray.height() > 800 {
-        eprintln!("  [19/20] Downscaled");
         let scale = 800.0 / gray.width().max(gray.height()) as f32;
-        let downscaled = image::imageops::resize(
+        let down = image::imageops::resize(
             &gray,
             (gray.width() as f32 * scale) as u32,
             (gray.height() as f32 * scale) as u32,
             image::imageops::FilterType::Lanczos3,
         );
-        if let Some(content) = try_decode_gray(&downscaled) {
-            eprintln!("  ✓ Success!");
-            return Ok(content);
-        }
+        if let Some(s) = try_it(down) { return Ok(s); }
     }
-
-    // Try 20: Gaussian blur then threshold (reduces noise)
-    eprintln!("  [20/20] Blurred + threshold");
     let blurred = image::imageops::blur(&gray, 1.0);
-    let thresholded = apply_threshold(&blurred, 128);
-    if let Some(content) = try_decode_gray(&thresholded) {
-        eprintln!("  ✓ Success!");
-        return Ok(content);
-    }
+    if let Some(s) = try_it(apply_threshold(&blurred, 128)) { return Ok(s); }
 
-    eprintln!("  ✗ All preprocessing methods failed");
-    Err("Could not decode QR code after trying 20 different preprocessing methods. The QR code may be damaged, too blurry, or partially obscured.".to_string())
+    Err("Could not decode QR code. The image may be damaged, too blurry, or partially obscured.".into())
 }
 
 /// Get image from clipboard and decode QR code.
@@ -993,82 +926,48 @@ fn paste_and_decode_qr() -> Result<String, String> {
         .get_image()
         .map_err(|e| format!("No image in clipboard: {}. Try taking a screenshot with Cmd+Shift+4 and selecting the QR code area.", e))?;
 
-    // Convert arboard ImageData to image::DynamicImage
-    let width = img_data.width;
-    let height = img_data.height;
-    let rgba_bytes = &img_data.bytes;
+    let width = img_data.width as u32;
+    let height = img_data.height as u32;
+    let bytes = img_data.bytes.to_vec();
 
-    // Debug info
-    eprintln!(
-        "Clipboard image: {}x{}, {} bytes total, expected {} bytes",
-        width,
-        height,
-        rgba_bytes.len(),
-        width * height * 4
-    );
-
-    // arboard returns RGBA on most platforms, but the stride might not match width exactly
-    // Try to create the image, handling potential stride issues
-    let bytes_per_pixel = rgba_bytes.len() / (width * height);
-    eprintln!("Bytes per pixel: {}", bytes_per_pixel);
-
-    let dynamic_img = if bytes_per_pixel == 4 {
-        // RGBA format
-        let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba_bytes.to_vec())
-            .ok_or_else(|| {
-                format!(
-                    "Failed to create RGBA image from clipboard data ({}x{}, {} bytes)",
-                    width,
-                    height,
-                    rgba_bytes.len()
-                )
-            })?;
-        DynamicImage::ImageRgba8(img)
-    } else if bytes_per_pixel == 3 {
-        // RGB format
-        let img = image::RgbImage::from_raw(width as u32, height as u32, rgba_bytes.to_vec())
-            .ok_or_else(|| {
-                format!(
-                    "Failed to create RGB image from clipboard data ({}x{}, {} bytes)",
-                    width,
-                    height,
-                    rgba_bytes.len()
-                )
-            })?;
-        DynamicImage::ImageRgb8(img)
-    } else {
-        return Err(format!(
-            "Unexpected pixel format: {} bytes per pixel. Expected 3 (RGB) or 4 (RGBA).",
-            bytes_per_pixel
-        ));
+    let dynamic_img = match bytes.len() / (width as usize * height as usize) {
+        4 => image::RgbaImage::from_raw(width, height, bytes)
+            .map(DynamicImage::ImageRgba8)
+            .ok_or_else(|| format!("Failed to create RGBA image ({}x{})", width, height))?,
+        3 => image::RgbImage::from_raw(width, height, bytes)
+            .map(DynamicImage::ImageRgb8)
+            .ok_or_else(|| format!("Failed to create RGB image ({}x{})", width, height))?,
+        n => return Err(format!("Unexpected pixel format: {} bytes per pixel.", n)),
     };
-
-    eprintln!("Successfully created image, attempting QR decode...");
-
-    // Save debug image to temp file for troubleshooting
-    let temp_path = std::env::temp_dir().join("signal_qr_debug.png");
-    if let Err(e) = dynamic_img.save(&temp_path) {
-        eprintln!("Failed to save debug image: {}", e);
-    } else {
-        eprintln!("Saved debug image to: {}", temp_path.display());
-    }
 
     decode_qr_from_image(&dynamic_img)
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
-
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--demo") {
+        MODE.set(Mode::Demo).ok();
+    } else if args.iter().any(|a| a == "--staging") {
+        MODE.set(Mode::Staging).ok();
+        signal_http::enable_staging();
+    }
+
+    let title = match mode() {
+        Mode::Demo => "Signal Setup Tool [DEMO]",
+        Mode::Staging => "Signal Setup Tool [STAGING]",
+        Mode::Production => "Signal Setup Tool",
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Signal Setup Tool")
+            .with_title(title)
             .with_inner_size([580.0, 600.0])
             .with_resizable(true),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Signal Setup Tool",
+        title,
         options,
         Box::new(|cc| Ok(Box::new(SignalSetupApp::new(cc)))),
     )
