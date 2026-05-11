@@ -1,4 +1,4 @@
-name: Check Signal production certificate
+name: Check Signal certs
 
 on:
   schedule:
