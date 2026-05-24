@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-05-24
+
 - Store account secrets (password, ACI/PNI identity key pairs, master key,
   profile key) in the OS-native keyring instead of `accounts.json`:
   macOS Keychain, Windows Credential Manager, Linux Secret Service.
@@ -17,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Re-link" action on the completion screen.
 - One-shot migration of `accounts.json` from earlier builds: secrets are
   moved into the keyring and the file is rewritten without them.
+- macOS releases ship as ad-hoc-signed `.app` bundles inside per-arch
+  `.dmg` images (Intel + Apple Silicon) instead of raw binaries.
 
 ## [3.0.2] - 2026-05-11
 
@@ -85,7 +89,8 @@ Same set of changes as 3.0.1 — released from a parallel branch.
   Signal account and link Signal Desktop without a smartphone.
 - GitHub Actions workflow publishing binaries on release.
 
-[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/almet/signal-without-smartphone/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/almet/signal-without-smartphone/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/almet/signal-without-smartphone/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/almet/signal-without-smartphone/compare/v2.0.0...v3.0.0

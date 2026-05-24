@@ -277,7 +277,20 @@ impl eframe::App for SignalSetupApp {
                 WorkResult::RegisterError(e) => {
                     self.status = Status::Error(format!("Registration failed: {e}"));
                 }
-                WorkResult::VerifyOk { account } => {
+                WorkResult::VerifyOk { mut account } => {
+                    // Bind a Signal Desktop profile to this account so the
+                    // linking step (and later launches) can address it by
+                    // `--user-data-dir`. Pre-existing default profile is
+                    // adopted when free; otherwise a phone-derived name.
+                    let taken: Vec<String> = persistence::list()
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|a| a.desktop_profile.clone())
+                        .collect();
+                    account.desktop_profile = Some(
+                        signal_desktop::choose_profile_for_new_account(&account.phone, &taken),
+                    );
                     if let Err(e) = persistence::save(&account) {
                         eprintln!("Warning: could not save account to disk: {e}");
                     }
@@ -408,6 +421,7 @@ impl SignalSetupApp {
         ui.add_space(12.0);
 
         enum WelcomeAction {
+            Launch(String),
             Relink(SignalAccount),
             Delete(String),
         }
@@ -443,16 +457,37 @@ impl SignalSetupApp {
                                 .add(
                                     egui::Button::new(
                                         RichText::new("Re-link Desktop")
+                                            .color(HEADING)
+                                            .size(14.0),
+                                    )
+                                    .fill(INSET_BG)
+                                    .stroke(egui::Stroke::new(1.0, BORDER))
+                                    .rounding(egui::Rounding::same(6.0))
+                                    .min_size(egui::vec2(120.0, 32.0)),
+                                )
+                                .clicked()
+                            {
+                                action = Some(WelcomeAction::Relink(account.clone()));
+                            }
+                            let can_launch = account.desktop_profile.is_some()
+                                && signal_desktop::is_installed();
+                            if ui
+                                .add_enabled(
+                                    can_launch,
+                                    egui::Button::new(
+                                        RichText::new("🚀  Launch")
                                             .color(egui::Color32::WHITE)
                                             .size(14.0),
                                     )
                                     .fill(SIGNAL_BLUE)
                                     .rounding(egui::Rounding::same(6.0))
-                                    .min_size(egui::vec2(140.0, 32.0)),
+                                    .min_size(egui::vec2(120.0, 32.0)),
                                 )
                                 .clicked()
                             {
-                                action = Some(WelcomeAction::Relink(account.clone()));
+                                if let Some(p) = account.desktop_profile.clone() {
+                                    action = Some(WelcomeAction::Launch(p));
+                                }
                             }
                         });
                     });
@@ -477,6 +512,15 @@ impl SignalSetupApp {
         }
 
         match action {
+            Some(WelcomeAction::Launch(profile)) => {
+                if let Err(e) = signal_desktop::launch(&profile) {
+                    self.status =
+                        Status::Error(format!("Could not launch Signal Desktop: {e}"));
+                } else {
+                    self.status =
+                        Status::Info(format!("Signal Desktop launched (profile: {profile})."));
+                }
+            }
             Some(WelcomeAction::Relink(account)) => {
                 self.phone = account.phone.clone();
                 self.signal_account = Some(account);
@@ -709,40 +753,75 @@ impl SignalSetupApp {
         instruction_box(
             ui,
             &[
-                "1. Open Signal Desktop and click \"Link to an existing device\"",
-                "2. Take a screenshot of the QR code (Cmd+Shift+4 on Mac, Win+Shift+S on Windows)",
-                "3. Click \"Paste QR Image\" below to automatically decode it",
+                "1. Click \"Launch Signal Desktop\" below to open it with this account's profile",
+                "2. In Signal Desktop, click \"Link to an existing device\"",
+                "3. Take a screenshot of the QR code (Cmd+Shift+4 on Mac, Win+Shift+S on Windows)",
+                "4. Click \"Paste QR Image\" to automatically decode it",
                 "   OR manually scan with a QR app and paste the tsdevice:// link",
             ],
         );
 
         ui.add_space(12.0);
 
-        // Add "Paste QR Image" button
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new("📋  Paste QR Image")
-                        .size(14.0)
-                        .color(SIGNAL_BLUE),
+        let profile = self
+            .signal_account
+            .as_ref()
+            .and_then(|a| a.desktop_profile.clone());
+        ui.horizontal(|ui| {
+            let can_launch = profile.is_some() && signal_desktop::is_installed();
+            if ui
+                .add_enabled(
+                    can_launch,
+                    egui::Button::new(
+                        RichText::new("🚀  Launch Signal Desktop")
+                            .size(14.0)
+                            .color(SIGNAL_BLUE),
+                    )
+                    .fill(INFO_BG)
+                    .stroke(egui::Stroke::new(1.0, INFO_BORDER))
+                    .rounding(egui::Rounding::same(8.0))
+                    .min_size(egui::vec2(0.0, 36.0)),
                 )
-                .fill(INFO_BG)
-                .stroke(egui::Stroke::new(1.0, INFO_BORDER))
-                .rounding(egui::Rounding::same(8.0))
-                .min_size(egui::vec2(0.0, 36.0)),
-            )
-            .clicked()
-        {
-            match paste_and_decode_qr() {
-                Ok(uri) => {
-                    self.device_uri = uri;
-                    self.status = Status::Success("QR code decoded successfully!".into());
-                }
-                Err(e) => {
-                    self.status = Status::Error(format!("Failed to decode QR code: {}", e));
+                .clicked()
+            {
+                let profile = profile.clone().unwrap();
+                match signal_desktop::launch(&profile) {
+                    Ok(()) => {
+                        self.status = Status::Info(format!(
+                            "Signal Desktop launched (profile: {profile}). Show the QR code, then paste it below."
+                        ));
+                    }
+                    Err(e) => {
+                        self.status = Status::Error(format!("Could not launch Signal Desktop: {e}"));
+                    }
                 }
             }
-        }
+
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("📋  Paste QR Image")
+                            .size(14.0)
+                            .color(SIGNAL_BLUE),
+                    )
+                    .fill(INFO_BG)
+                    .stroke(egui::Stroke::new(1.0, INFO_BORDER))
+                    .rounding(egui::Rounding::same(8.0))
+                    .min_size(egui::vec2(0.0, 36.0)),
+                )
+                .clicked()
+            {
+                match paste_and_decode_qr() {
+                    Ok(uri) => {
+                        self.device_uri = uri;
+                        self.status = Status::Success("QR code decoded successfully!".into());
+                    }
+                    Err(e) => {
+                        self.status = Status::Error(format!("Failed to decode QR code: {}", e));
+                    }
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.label(
@@ -781,6 +860,21 @@ impl SignalSetupApp {
 
     fn ui_complete(&mut self, ui: &mut egui::Ui) {
         ui.add_space(16.0);
+
+        // Snapshot the account ahead of the closure — both the launch and
+        // re-link buttons need it, and the closure borrows `self` mutably.
+        let profile = self
+            .signal_account
+            .as_ref()
+            .and_then(|a| a.desktop_profile.clone());
+
+        enum CompleteAction {
+            Launch,
+            Relink,
+            Done,
+        }
+        let mut action: Option<CompleteAction> = None;
+
         ui.vertical_centered(|ui| {
             ui.label(RichText::new("🎉").size(52.0));
             ui.add_space(12.0);
@@ -797,19 +891,76 @@ impl SignalSetupApp {
                     .color(MUTED),
             );
             ui.add_space(28.0);
+
+            ui.horizontal(|ui| {
+                let can_launch = profile.is_some() && signal_desktop::is_installed();
+                if ui
+                    .add_enabled(
+                        can_launch,
+                        egui::Button::new(
+                            RichText::new("🚀  Launch Signal Desktop")
+                                .size(14.0)
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(SIGNAL_BLUE)
+                        .rounding(egui::Rounding::same(8.0))
+                        .min_size(egui::vec2(200.0, 40.0)),
+                    )
+                    .clicked()
+                {
+                    action = Some(CompleteAction::Launch);
+                }
+
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Re-link").size(14.0).color(HEADING))
+                            .fill(INSET_BG)
+                            .stroke(egui::Stroke::new(1.0, BORDER))
+                            .rounding(egui::Rounding::same(8.0))
+                            .min_size(egui::vec2(120.0, 40.0)),
+                    )
+                    .clicked()
+                {
+                    action = Some(CompleteAction::Relink);
+                }
+            });
+
+            ui.add_space(12.0);
             if ui
                 .add(
-                    egui::Button::new(RichText::new("Start over").size(14.0).color(MUTED))
-                        .fill(INSET_BG)
-                        .stroke(egui::Stroke::new(1.0, BORDER))
-                        .rounding(egui::Rounding::same(8.0)),
+                    egui::Button::new(RichText::new("Done").size(13.0).color(MUTED)).frame(false),
                 )
                 .clicked()
             {
-                *self = SignalSetupApp::default();
+                action = Some(CompleteAction::Done);
             }
         });
         ui.add_space(16.0);
+
+        match action {
+            Some(CompleteAction::Launch) => {
+                if let Some(p) = profile {
+                    if let Err(e) = signal_desktop::launch(&p) {
+                        self.status =
+                            Status::Error(format!("Could not launch Signal Desktop: {e}"));
+                    }
+                }
+            }
+            Some(CompleteAction::Relink) => {
+                // Keep the signal_account; clear the QR text and go back to
+                // step 4 so the user can paste a fresh QR.
+                self.device_uri.clear();
+                self.status = Status::Info(
+                    "Re-linking. Show a fresh QR code from Signal Desktop, then paste it below."
+                        .into(),
+                );
+                self.step = Step::Linking;
+            }
+            Some(CompleteAction::Done) => {
+                *self = SignalSetupApp::default();
+            }
+            None => {}
+        }
     }
 }
 

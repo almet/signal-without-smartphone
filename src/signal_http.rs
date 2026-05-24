@@ -169,6 +169,10 @@ pub struct SignalAccount {
     profile_key: Vec<u8>,
     /// 14-bit random registration ID, included in Signal Protocol message headers.
     registration_id: u32,
+    /// Name of the Signal Desktop `--user-data-dir` profile bound to this
+    /// account. `None` for accounts saved by older builds; assigned at
+    /// registration time for new ones. See `crate::signal_desktop`.
+    pub desktop_profile: Option<String>,
 }
 
 /// Non-sensitive metadata for a saved account, serialized to disk.
@@ -182,6 +186,8 @@ pub struct PersistedAccount {
     pub aci: Option<String>,
     pub pni: Option<String>,
     pub registration_id: u32,
+    #[serde(default)]
+    pub desktop_profile: Option<String>,
 }
 
 /// Sensitive fields for a `SignalAccount`. Each field is held in its own
@@ -205,6 +211,7 @@ impl SignalAccount {
             aci: self.aci.clone(),
             pni: self.pni.clone(),
             registration_id: self.registration_id,
+            desktop_profile: self.desktop_profile.clone(),
         };
         let secrets = AccountSecrets {
             password: self.password.clone(),
@@ -243,6 +250,7 @@ impl SignalAccount {
             master_key: decode(&s.master_key_b64, "master_key")?,
             profile_key: decode(&s.profile_key_b64, "profile_key")?,
             registration_id: p.registration_id,
+            desktop_profile: p.desktop_profile,
         })
     }
 
@@ -267,6 +275,7 @@ impl SignalAccount {
             master_key,
             profile_key,
             registration_id: 12345,
+            desktop_profile: None,
         }
     }
 }
@@ -618,6 +627,7 @@ pub fn verify_and_register(
         master_key,
         profile_key,
         registration_id,
+        desktop_profile: None,
     })
 }
 

@@ -241,6 +241,7 @@ impl LegacyAccount {
                 aci: self.aci,
                 pni: self.pni,
                 registration_id: self.registration_id,
+                desktop_profile: None,
             },
             AccountSecrets {
                 password: self.password,
