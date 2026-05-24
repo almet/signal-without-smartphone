@@ -171,7 +171,64 @@ pub struct SignalAccount {
     registration_id: u32,
 }
 
+/// On-disk form of `SignalAccount`. All binary fields are base64-encoded so
+/// the file is human-inspectable and survives encoding round-trips.
+#[derive(Serialize, Deserialize)]
+pub struct PersistedAccount {
+    pub phone: String,
+    pub password: String,
+    pub aci: Option<String>,
+    pub pni: Option<String>,
+    pub registration_id: u32,
+    aci_identity: String,
+    pni_identity: String,
+    master_key: String,
+    profile_key: String,
+}
+
 impl SignalAccount {
+    /// Serialize to the on-disk form. Identity key pairs become base64 blobs.
+    pub fn to_persisted(&self) -> PersistedAccount {
+        PersistedAccount {
+            phone: self.phone.clone(),
+            password: self.password.clone(),
+            aci: self.aci.clone(),
+            pni: self.pni.clone(),
+            registration_id: self.registration_id,
+            aci_identity: BASE64_STANDARD.encode(self.aci_identity.serialize()),
+            pni_identity: BASE64_STANDARD.encode(self.pni_identity.serialize()),
+            master_key: BASE64_STANDARD.encode(&self.master_key),
+            profile_key: BASE64_STANDARD.encode(&self.profile_key),
+        }
+    }
+
+    /// Inverse of `to_persisted`. Fails if any base64 field is malformed or
+    /// the identity key bytes aren't a valid `IdentityKeyPair`.
+    pub fn try_from_persisted(p: PersistedAccount) -> Result<Self, SignalError> {
+        let decode = |s: &str, what: &str| {
+            BASE64_STANDARD
+                .decode(s)
+                .map_err(|e| SignalError::Other(format!("decode {what}: {e}")))
+        };
+        let aci_bytes = decode(&p.aci_identity, "aci_identity")?;
+        let pni_bytes = decode(&p.pni_identity, "pni_identity")?;
+        let aci_identity = IdentityKeyPair::try_from(aci_bytes.as_slice())
+            .map_err(|e| SignalError::Other(format!("parse aci_identity: {e}")))?;
+        let pni_identity = IdentityKeyPair::try_from(pni_bytes.as_slice())
+            .map_err(|e| SignalError::Other(format!("parse pni_identity: {e}")))?;
+        Ok(Self {
+            phone: p.phone,
+            password: p.password,
+            aci_identity,
+            pni_identity,
+            aci: p.aci,
+            pni: p.pni,
+            master_key: decode(&p.master_key, "master_key")?,
+            profile_key: decode(&p.profile_key, "profile_key")?,
+            registration_id: p.registration_id,
+        })
+    }
+
     /// Create a fake account for demo/testing purposes.
     pub fn dummy(phone: &str) -> Self {
         use rand::rngs::StdRng;
@@ -1479,5 +1536,83 @@ mod tests {
 
         assert_eq!(ct.message_type(), sigprot::CiphertextMessageType::PreKey);
         assert!(!ct.serialize().is_empty());
+    }
+
+    /// Smoke test: hit Signal's production server with a real HTTPS request
+    /// and confirm the client can complete the round-trip — TLS handshake
+    /// against the pinned leaf certificate, request framing, and JSON
+    /// response parsing.
+    ///
+    /// A real network/TLS failure (`SignalError::Http`) fails the test. Any
+    /// other outcome — a session response, a captcha challenge, or an API
+    /// rejection — proves the client successfully talked to Signal.
+    #[test]
+    fn signal_production_roundtrip() {
+        // E.164-shaped placeholder. Whether Signal accepts the session,
+        // demands a captcha, or rejects the number, all three outcomes prove
+        // the request reached the server and a response came back.
+        let result = request_verification_code("+15555550123", None);
+
+        match result {
+            Ok(_) => {}
+            Err(SignalError::Api { .. }) => {}
+            Err(SignalError::CaptchaRequired) => {}
+            Err(SignalError::Other(_)) => {}
+            Err(SignalError::Http(e)) => {
+                panic!("network/TLS failure talking to Signal production: {e}");
+            }
+            Err(e) => panic!("unexpected error from Signal production: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_persisted_account_roundtrip() {
+        let original = SignalAccount::dummy("+15555550123");
+        let persisted = original.to_persisted();
+        let json = serde_json::to_string(&persisted).unwrap();
+        let parsed: PersistedAccount = serde_json::from_str(&json).unwrap();
+        let restored = SignalAccount::try_from_persisted(parsed).unwrap();
+
+        assert_eq!(restored.phone, original.phone);
+        assert_eq!(restored.password, original.password);
+        assert_eq!(restored.aci, original.aci);
+        assert_eq!(restored.pni, original.pni);
+        assert_eq!(restored.registration_id, original.registration_id);
+        assert_eq!(restored.master_key, original.master_key);
+        assert_eq!(restored.profile_key, original.profile_key);
+        assert_eq!(
+            restored.aci_identity.serialize(),
+            original.aci_identity.serialize()
+        );
+        assert_eq!(
+            restored.pni_identity.serialize(),
+            original.pni_identity.serialize()
+        );
+    }
+
+    /// Reproduces the user-reported failure with a real toll-free-shaped
+    /// number against production. Captures the full chain of source errors
+    /// so we can see what's actually going wrong at the transport layer
+    /// (DNS, TCP, TLS, timeout, etc.).
+    #[test]
+    fn signal_production_roundtrip_reported_number() {
+        let result = request_verification_code("+18777804236", None);
+
+        match result {
+            Ok(_) => {}
+            Err(SignalError::Api { .. }) => {}
+            Err(SignalError::CaptchaRequired) => {}
+            Err(SignalError::Other(_)) => {}
+            Err(SignalError::Http(e)) => {
+                let mut chain = format!("{e}");
+                let mut src: &dyn std::error::Error = &e;
+                while let Some(next) = src.source() {
+                    chain.push_str(&format!("\n  caused by: {next}"));
+                    src = next;
+                }
+                panic!("network/TLS failure talking to Signal production:\n{chain}");
+            }
+            Err(e) => panic!("unexpected error from Signal production: {e}"),
+        }
     }
 }

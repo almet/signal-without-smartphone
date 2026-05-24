@@ -1,4 +1,6 @@
+mod persistence;
 mod signal_demo;
+mod signal_desktop;
 mod signal_http;
 
 use arboard::Clipboard;
@@ -97,6 +99,9 @@ const INSET_BG: egui::Color32 = egui::Color32::from_rgb(249, 250, 251);
 
 #[derive(Default, PartialEq, Clone, Copy)]
 enum Step {
+    /// Shown only at startup when a previously-saved account is found on
+    /// disk. Lets the user re-link, switch numbers, or delete.
+    Welcome,
     #[default]
     PhoneInput,
     Captcha,
@@ -108,6 +113,7 @@ enum Step {
 impl Step {
     fn number(self) -> usize {
         match self {
+            Step::Welcome => 0,
             Step::PhoneInput => 1,
             Step::Captcha => 2,
             Step::Verification => 3,
@@ -160,12 +166,30 @@ struct SignalSetupApp {
     /// Set to true when registration returns 409 (existing account supports
     /// device transfer). The UI shows an explanation and a "Skip Transfer" button.
     device_transfer_available: bool,
+    /// True once Signal has asked us for a captcha during this session. The
+    /// step indicator uses it to decide whether "Captcha" is a step the user
+    /// can navigate back to — otherwise it was skipped and shouldn't be.
+    captcha_was_required: bool,
 }
 
 impl SignalSetupApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
-        Self::default()
+        let mut app = Self::default();
+
+        // If any accounts are on disk, route to the welcome chooser. The
+        // accounts themselves are re-read each time the screen renders so the
+        // list stays in sync with edits/deletes.
+        match persistence::list() {
+            Ok(accounts) if !accounts.is_empty() => {
+                app.step = Step::Welcome;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                app.status = Status::Error(format!("Could not read saved accounts: {e}"));
+            }
+        }
+        app
     }
 
     fn spawn<F>(&mut self, ctx: egui::Context, f: F)
@@ -187,6 +211,47 @@ impl SignalSetupApp {
         self.loading = false;
         Some(result)
     }
+
+    /// Jump back to a previously-completed step. Invalidates any state owned
+    /// by later steps so the flow restarts cleanly from `target`.
+    fn jump_back_to_step(&mut self, target: usize) {
+        // Drop any in-flight worker — its result would land in the wrong step.
+        self.result_rx = None;
+        self.loading = false;
+        self.status = Status::None;
+
+        // Each step depends on state produced by earlier ones. Going back to
+        // step N must wipe everything step >N produced.
+        match target {
+            1 => {
+                self.captcha_token.clear();
+                self.verification_code.clear();
+                self.device_uri.clear();
+                self.session_id = None;
+                self.signal_account = None;
+                self.device_transfer_available = false;
+                self.captcha_was_required = false;
+                self.step = Step::PhoneInput;
+            }
+            2 => {
+                self.verification_code.clear();
+                self.device_uri.clear();
+                self.signal_account = None;
+                self.device_transfer_available = false;
+                self.step = Step::Captcha;
+            }
+            3 => {
+                self.device_uri.clear();
+                self.signal_account = None;
+                self.device_transfer_available = false;
+                self.step = Step::Verification;
+            }
+            4 => {
+                self.step = Step::Linking;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl eframe::App for SignalSetupApp {
@@ -204,6 +269,7 @@ impl eframe::App for SignalSetupApp {
                 }
                 WorkResult::RegisterNeedsCaptcha { session_id } => {
                     self.session_id = Some(session_id);
+                    self.captcha_was_required = true;
                     self.status =
                         Status::Info("A captcha is required to complete registration.".into());
                     self.step = Step::Captcha;
@@ -212,6 +278,9 @@ impl eframe::App for SignalSetupApp {
                     self.status = Status::Error(format!("Registration failed: {e}"));
                 }
                 WorkResult::VerifyOk { account } => {
+                    if let Err(e) = persistence::save(&account) {
+                        eprintln!("Warning: could not save account to disk: {e}");
+                    }
                     self.signal_account = Some(account);
                     self.device_transfer_available = false;
                     self.status = Status::Success("Phone number verified.".into());
@@ -255,8 +324,14 @@ impl eframe::App for SignalSetupApp {
                         .size(13.0)
                         .color(MUTED),
                 );
-                ui.add_space(14.0);
-                draw_step_indicator(ui, step_num);
+                if step_num > 0 {
+                    ui.add_space(14.0);
+                    if let Some(target) =
+                        draw_step_indicator(ui, step_num, self.captcha_was_required)
+                    {
+                        self.jump_back_to_step(target);
+                    }
+                }
             });
 
         egui::CentralPanel::default()
@@ -291,6 +366,7 @@ impl eframe::App for SignalSetupApp {
                             }
 
                             match self.step {
+                                Step::Welcome => self.ui_welcome(ui),
                                 Step::PhoneInput => self.ui_phone(ui, ctx),
                                 Step::Captcha => self.ui_captcha(ui, ctx),
                                 Step::Verification => self.ui_verify(ui, ctx),
@@ -306,6 +382,121 @@ impl eframe::App for SignalSetupApp {
 // Per-step UI panels
 
 impl SignalSetupApp {
+    fn ui_welcome(&mut self, ui: &mut egui::Ui) {
+        step_header(ui, "Welcome back", "Saved Signal accounts");
+
+        let accounts = match persistence::list() {
+            Ok(a) => a,
+            Err(e) => {
+                ui.label(
+                    RichText::new(format!("Could not read saved accounts: {e}")).color(ERROR_RED),
+                );
+                return;
+            }
+        };
+
+        if accounts.is_empty() {
+            // No accounts left → drop straight into the registration flow.
+            self.step = Step::PhoneInput;
+            return;
+        }
+
+        ui.label(
+            RichText::new("Pick an account to re-link Signal Desktop, or register a new one:")
+                .color(MUTED),
+        );
+        ui.add_space(12.0);
+
+        enum WelcomeAction {
+            Relink(SignalAccount),
+            Delete(String),
+        }
+        let mut action: Option<WelcomeAction> = None;
+
+        for account in &accounts {
+            egui::Frame::none()
+                .fill(INSET_BG)
+                .stroke(egui::Stroke::new(1.0, BORDER))
+                .rounding(egui::Rounding::same(8.0))
+                .inner_margin(egui::Margin::same(12.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&account.phone)
+                                .size(17.0)
+                                .color(HEADING)
+                                .strong(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Delete").color(ERROR_RED).size(13.0),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                action = Some(WelcomeAction::Delete(account.phone.clone()));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Re-link Desktop")
+                                            .color(egui::Color32::WHITE)
+                                            .size(14.0),
+                                    )
+                                    .fill(SIGNAL_BLUE)
+                                    .rounding(egui::Rounding::same(6.0))
+                                    .min_size(egui::vec2(140.0, 32.0)),
+                                )
+                                .clicked()
+                            {
+                                action = Some(WelcomeAction::Relink(account.clone()));
+                            }
+                        });
+                    });
+                });
+            ui.add_space(8.0);
+        }
+
+        ui.add_space(8.0);
+        if ui
+            .add(
+                egui::Button::new(RichText::new("Register a new number").size(15.0))
+                    .rounding(egui::Rounding::same(8.0))
+                    .min_size(egui::vec2(200.0, 40.0)),
+            )
+            .clicked()
+        {
+            self.phone.clear();
+            self.signal_account = None;
+            self.status = Status::None;
+            self.step = Step::PhoneInput;
+            return;
+        }
+
+        match action {
+            Some(WelcomeAction::Relink(account)) => {
+                self.phone = account.phone.clone();
+                self.signal_account = Some(account);
+                self.status = Status::Info(
+                    "Using the saved account. Paste a new linking QR code from Signal Desktop."
+                        .into(),
+                );
+                self.step = Step::Linking;
+            }
+            Some(WelcomeAction::Delete(phone)) => {
+                if let Err(e) = persistence::delete(&phone) {
+                    self.status = Status::Error(format!("Could not delete account: {e}"));
+                } else {
+                    self.status = Status::Success(format!("Deleted {phone}."));
+                }
+            }
+            None => {}
+        }
+    }
+
     fn ui_phone(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         step_header(ui, "Phone number", "Step 1 of 4");
 
@@ -335,7 +526,7 @@ impl SignalSetupApp {
                     Ok(signal_http::VerificationRequest::CaptchaRequired { session_id }) => {
                         WorkResult::RegisterNeedsCaptcha { session_id }
                     }
-                    Err(e) => WorkResult::RegisterError(e.to_string()),
+                    Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
                 }
             });
         }
@@ -398,7 +589,7 @@ impl SignalSetupApp {
                     Ok(signal_http::VerificationRequest::CaptchaRequired { session_id }) => {
                         WorkResult::RegisterNeedsCaptcha { session_id }
                     }
-                    Err(e) => WorkResult::RegisterError(e.to_string()),
+                    Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
                 }
             });
         }
@@ -412,7 +603,10 @@ impl SignalSetupApp {
 
             egui::Frame::none()
                 .fill(egui::Color32::from_rgb(255, 247, 237))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(253, 186, 116)))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(253, 186, 116),
+                ))
                 .rounding(egui::Rounding::same(10.0))
                 .inner_margin(egui::Margin::same(14.0))
                 .show(ui, |ui| {
@@ -456,14 +650,9 @@ impl SignalSetupApp {
                         let code = self.verification_code.clone();
                         self.device_transfer_available = false;
                         self.spawn(ctx.clone(), move || {
-                            match api::verify_and_register(
-                                &phone,
-                                &session_id,
-                                &code,
-                                true,
-                            ) {
+                            match api::verify_and_register(&phone, &session_id, &code, true) {
                                 Ok(account) => WorkResult::VerifyOk { account },
-                                Err(e) => WorkResult::VerifyError(e.to_string()),
+                                Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
                             }
                         });
                     }
@@ -505,7 +694,7 @@ impl SignalSetupApp {
                     Err(signal_http::SignalError::DeviceTransferAvailable) => {
                         WorkResult::DeviceTransferAvailable
                     }
-                    Err(e) => WorkResult::VerifyError(e.to_string()),
+                    Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
                 }
             });
         }
@@ -513,6 +702,9 @@ impl SignalSetupApp {
 
     fn ui_linking(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         step_header(ui, "Link Signal Desktop", "Step 4 of 4");
+
+        show_signal_desktop_status(ui);
+        ui.add_space(12.0);
 
         instruction_box(
             ui,
@@ -581,7 +773,7 @@ impl SignalSetupApp {
             self.spawn(ctx.clone(), move || {
                 match api::link_device(&account, &uri) {
                     Ok(()) => WorkResult::LinkOk,
-                    Err(e) => WorkResult::LinkError(e.to_string()),
+                    Err(e) => WorkResult::LinkError(format_error_chain(&e)),
                 }
             });
         }
@@ -600,7 +792,7 @@ impl SignalSetupApp {
             );
             ui.add_space(8.0);
             ui.label(
-                RichText::new("Your Signal Desktop is now linked and ready to use.")
+                RichText::new("Your Signal Desktop is now linked. The first run might take some time to sync, but should be ready soon!")
                     .size(15.0)
                     .color(MUTED),
             );
@@ -678,7 +870,15 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 /// Visual step indicator drawn with egui's painter (circles + connecting lines).
-fn draw_step_indicator(ui: &mut egui::Ui, current: usize) {
+/// Draws the four-step indicator and returns the step number the user
+/// clicked, if any. Only steps strictly before `current` are clickable —
+/// future steps can't be jumped to. Step 2 (Captcha) is also unclickable
+/// when Signal never asked for one this session.
+fn draw_step_indicator(
+    ui: &mut egui::Ui,
+    current: usize,
+    captcha_was_required: bool,
+) -> Option<usize> {
     let names = ["Phone", "Captcha", "Verify", "Link"];
     let n = names.len();
     let circle_radius = 13.0_f32;
@@ -689,38 +889,86 @@ fn draw_step_indicator(ui: &mut egui::Ui, current: usize) {
         ui.allocate_exact_size(egui::vec2(available, height), egui::Sense::hover());
 
     let step_width = available / n as f32;
-    let painter = ui.painter();
+    let mut clicked: Option<usize> = None;
+
+    // Connector lines first so the circles render on top of them.
+    for i in 0..n - 1 {
+        let step = i + 1;
+        let cx = outer_rect.left() + step_width * (i as f32 + 0.5);
+        let cy = outer_rect.top() + circle_radius;
+        let next_cx = outer_rect.left() + step_width * (i as f32 + 1.5);
+        let line_color = if step < current {
+            SUCCESS_GREEN
+        } else {
+            egui::Color32::from_rgb(209, 213, 219)
+        };
+        ui.painter().line_segment(
+            [
+                egui::pos2(cx + circle_radius + 4.0, cy),
+                egui::pos2(next_cx - circle_radius - 4.0, cy),
+            ],
+            egui::Stroke::new(2.0, line_color),
+        );
+    }
 
     for i in 0..n {
         let step = i + 1;
         let is_done = step < current;
         let is_active = step == current;
+        // Past steps are clickable, except Captcha when it was skipped.
+        let is_clickable = is_done && !(step == 2 && !captcha_was_required);
 
         let cx = outer_rect.left() + step_width * (i as f32 + 0.5);
         let cy = outer_rect.top() + circle_radius;
         let center = egui::pos2(cx, cy);
 
-        let circle_color = if is_done {
+        // Hit-test region covers the circle and its label, so the entire
+        // visual unit is clickable rather than just the small disc.
+        let hit_rect = egui::Rect::from_center_size(
+            egui::pos2(cx, cy + 6.0),
+            egui::vec2(step_width.min(80.0), height),
+        );
+        let sense = if is_clickable {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let response = ui.interact(hit_rect, ui.id().with(("step", step)), sense);
+
+        if is_clickable && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            clicked = Some(step);
+        }
+
+        let hovered = is_clickable && response.hovered();
+        let mut circle_color = if is_done {
             SUCCESS_GREEN
         } else if is_active {
             SIGNAL_BLUE
         } else {
             egui::Color32::from_rgb(209, 213, 219)
         };
+        if hovered {
+            // Brighten on hover to signal interactivity.
+            circle_color = egui::Color32::from_rgb(
+                circle_color.r().saturating_add(20),
+                circle_color.g().saturating_add(20),
+                circle_color.b().saturating_add(20),
+            );
+        }
         let label_color = if is_done || is_active { HEADING } else { MUTED };
 
+        let painter = ui.painter();
         painter.circle_filled(center, circle_radius, circle_color);
-
-        let num_str = step.to_string();
-
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
-            &num_str,
+            step.to_string(),
             egui::FontId::proportional(11.0),
             egui::Color32::WHITE,
         );
-
         painter.text(
             egui::pos2(cx, cy + circle_radius + 5.0),
             egui::Align2::CENTER_TOP,
@@ -728,33 +976,18 @@ fn draw_step_indicator(ui: &mut egui::Ui, current: usize) {
             egui::FontId::proportional(12.0),
             label_color,
         );
-
-        // Connector line between circles
-        if i + 1 < n {
-            let next_cx = outer_rect.left() + step_width * (i as f32 + 1.5);
-            let line_color = if step < current {
-                SUCCESS_GREEN
-            } else {
-                egui::Color32::from_rgb(209, 213, 219)
-            };
-            painter.line_segment(
-                [
-                    egui::pos2(cx + circle_radius + 4.0, cy),
-                    egui::pos2(next_cx - circle_radius - 4.0, cy),
-                ],
-                egui::Stroke::new(2.0, line_color),
-            );
-        }
     }
+
+    clicked
 }
 
 /// Coloured status banner (error / success / info).
 fn show_status(ui: &mut egui::Ui, status: &Status) {
     let (icon, text, text_color, bg, border) = match status {
         Status::None => return,
-        Status::Error(m) => ("\u{26A0}", m.as_str(), ERROR_RED, ERROR_BG, ERROR_BORDER),
-        Status::Success(m) => ("\u{2713}", m.as_str(), SUCCESS_GREEN, SUCCESS_BG, SUCCESS_BORDER),
-        Status::Info(m) => ("\u{2139}", m.as_str(), INFO_TEXT, INFO_BG, INFO_BORDER),
+        Status::Error(m) => ("!", m.as_str(), ERROR_RED, ERROR_BG, ERROR_BORDER),
+        Status::Success(m) => ("OK", m.as_str(), SUCCESS_GREEN, SUCCESS_BG, SUCCESS_BORDER),
+        Status::Info(m) => ("i", m.as_str(), INFO_TEXT, INFO_BG, INFO_BORDER),
     };
 
     egui::Frame::none()
@@ -782,6 +1015,44 @@ fn step_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(12.0);
+}
+
+/// Soft banner reporting whether Signal Desktop is available on this machine.
+/// Linking won't work without it, but we don't block the flow — the user
+/// might install it before reaching step 4.
+fn show_signal_desktop_status(ui: &mut egui::Ui) {
+    let installed = signal_desktop::is_installed();
+    let configured = signal_desktop::is_configured();
+    let (msg, bg, border, fg) = match (installed, configured) {
+        (true, true) => (
+            "Signal Desktop detected and configured.".to_string(),
+            SUCCESS_BG,
+            SUCCESS_BORDER,
+            SUCCESS_GREEN,
+        ),
+        (true, false) => (
+            "Signal Desktop is installed but has not been launched yet.".to_string(),
+            INFO_BG,
+            INFO_BORDER,
+            INFO_TEXT,
+        ),
+        (false, _) => (
+            "Signal Desktop was not detected. If it isn't installed yet, install it now — \
+             otherwise this is just a detection miss and you can proceed."
+                .to_string(),
+            INFO_BG,
+            INFO_BORDER,
+            INFO_TEXT,
+        ),
+    };
+    egui::Frame::none()
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, border))
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.label(RichText::new(msg).size(13.0).color(fg));
+        });
 }
 
 /// Light inset box with bullet instructions.
@@ -881,20 +1152,32 @@ fn decode_qr_from_image(img: &DynamicImage) -> Result<String, String> {
 
     let try_it = |g: image::GrayImage| -> Option<String> { try_decode_gray(&g) };
 
-    if let Some(s) = try_it(gray.clone()) { return Ok(s); }
-    if let Some(s) = try_it(invert(&gray)) { return Ok(s); }
+    if let Some(s) = try_it(gray.clone()) {
+        return Ok(s);
+    }
+    if let Some(s) = try_it(invert(&gray)) {
+        return Ok(s);
+    }
 
     for t in [100u8, 128, 150, 180, 200] {
-        if let Some(s) = try_it(apply_threshold(&gray, t)) { return Ok(s); }
+        if let Some(s) = try_it(apply_threshold(&gray, t)) {
+            return Ok(s);
+        }
     }
     for (b, c) in [(20, 1.5_f32), (-20, 1.5), (0, 2.0)] {
-        if let Some(s) = try_it(adjust_brightness_contrast(&gray, b, c)) { return Ok(s); }
+        if let Some(s) = try_it(adjust_brightness_contrast(&gray, b, c)) {
+            return Ok(s);
+        }
     }
     for scale in [2u32, 3, 4] {
-        if let Some(s) = try_it(upscale(&gray, scale)) { return Ok(s); }
+        if let Some(s) = try_it(upscale(&gray, scale)) {
+            return Ok(s);
+        }
     }
     for (scale, t) in [(2u32, 128u8), (3, 128), (2, 150)] {
-        if let Some(s) = try_it(apply_threshold(&upscale(&gray, scale), t)) { return Ok(s); }
+        if let Some(s) = try_it(apply_threshold(&upscale(&gray, scale), t)) {
+            return Ok(s);
+        }
     }
     for (scale, b, c) in [(2u32, 0, 2.0_f32), (3, 0, 2.0)] {
         if let Some(s) = try_it(adjust_brightness_contrast(&upscale(&gray, scale), b, c)) {
@@ -909,12 +1192,19 @@ fn decode_qr_from_image(img: &DynamicImage) -> Result<String, String> {
             (gray.height() as f32 * scale) as u32,
             image::imageops::FilterType::Lanczos3,
         );
-        if let Some(s) = try_it(down) { return Ok(s); }
+        if let Some(s) = try_it(down) {
+            return Ok(s);
+        }
     }
     let blurred = image::imageops::blur(&gray, 1.0);
-    if let Some(s) = try_it(apply_threshold(&blurred, 128)) { return Ok(s); }
+    if let Some(s) = try_it(apply_threshold(&blurred, 128)) {
+        return Ok(s);
+    }
 
-    Err("Could not decode QR code. The image may be damaged, too blurry, or partially obscured.".into())
+    Err(
+        "Could not decode QR code. The image may be damaged, too blurry, or partially obscured."
+            .into(),
+    )
 }
 
 /// Get image from clipboard and decode QR code.
@@ -943,6 +1233,41 @@ fn paste_and_decode_qr() -> Result<String, String> {
     decode_qr_from_image(&dynamic_img)
 }
 
+/// Render an error plus the chain of underlying causes. `reqwest` errors in
+/// particular hide the actual reason (DNS, TCP, TLS) in `.source()`, so the
+/// top-level message alone is often just "error sending request".
+fn format_error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut src = err.source();
+    while let Some(cause) = src {
+        out.push_str(&format!(" — caused by: {cause}"));
+        src = cause.source();
+    }
+    out
+}
+
+/// Decode the embedded PNG into the RGBA buffer eframe wants for the window
+/// icon. Falls back to an empty icon on failure rather than crashing — a
+/// missing dock badge isn't worth panicking over.
+fn load_window_icon() -> egui::IconData {
+    const PNG: &[u8] = include_bytes!("../assets/logo.png");
+    match image::load_from_memory(PNG) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            egui::IconData {
+                rgba: rgba.into_raw(),
+                width: w,
+                height: h,
+            }
+        }
+        Err(e) => {
+            eprintln!("Could not decode embedded window icon: {e}");
+            egui::IconData::default()
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--demo") {
@@ -962,7 +1287,8 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title(title)
             .with_inner_size([580.0, 600.0])
-            .with_resizable(true),
+            .with_resizable(true)
+            .with_icon(load_window_icon()),
         ..Default::default()
     };
 
@@ -972,5 +1298,3 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| Ok(Box::new(SignalSetupApp::new(cc)))),
     )
 }
-
-
