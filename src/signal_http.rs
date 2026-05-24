@@ -171,60 +171,77 @@ pub struct SignalAccount {
     registration_id: u32,
 }
 
-/// On-disk form of `SignalAccount`. All binary fields are base64-encoded so
-/// the file is human-inspectable and survives encoding round-trips.
+/// Non-sensitive metadata for a saved account, serialized to disk.
+///
+/// Secret material (password, identity key pairs, master/profile keys) is
+/// stored in the OS keyring as separate entries — see `AccountSecrets` and
+/// `crate::persistence` for the keyring schema.
 #[derive(Serialize, Deserialize)]
 pub struct PersistedAccount {
     pub phone: String,
-    pub password: String,
     pub aci: Option<String>,
     pub pni: Option<String>,
     pub registration_id: u32,
-    aci_identity: String,
-    pni_identity: String,
-    master_key: String,
-    profile_key: String,
+}
+
+/// Sensitive fields for a `SignalAccount`. Each field is held in its own
+/// keyring entry; this struct just bundles them in memory while moving
+/// between `SignalAccount` and the keyring.
+///
+/// Binary fields are base64-encoded because keyring backends store strings.
+pub struct AccountSecrets {
+    pub password: String,
+    pub aci_identity_b64: String,
+    pub pni_identity_b64: String,
+    pub master_key_b64: String,
+    pub profile_key_b64: String,
 }
 
 impl SignalAccount {
-    /// Serialize to the on-disk form. Identity key pairs become base64 blobs.
-    pub fn to_persisted(&self) -> PersistedAccount {
-        PersistedAccount {
+    /// Split into the on-disk metadata and the keyring-bound secrets.
+    pub fn to_persisted(&self) -> (PersistedAccount, AccountSecrets) {
+        let public = PersistedAccount {
             phone: self.phone.clone(),
-            password: self.password.clone(),
             aci: self.aci.clone(),
             pni: self.pni.clone(),
             registration_id: self.registration_id,
-            aci_identity: BASE64_STANDARD.encode(self.aci_identity.serialize()),
-            pni_identity: BASE64_STANDARD.encode(self.pni_identity.serialize()),
-            master_key: BASE64_STANDARD.encode(&self.master_key),
-            profile_key: BASE64_STANDARD.encode(&self.profile_key),
-        }
+        };
+        let secrets = AccountSecrets {
+            password: self.password.clone(),
+            aci_identity_b64: BASE64_STANDARD.encode(self.aci_identity.serialize()),
+            pni_identity_b64: BASE64_STANDARD.encode(self.pni_identity.serialize()),
+            master_key_b64: BASE64_STANDARD.encode(&self.master_key),
+            profile_key_b64: BASE64_STANDARD.encode(&self.profile_key),
+        };
+        (public, secrets)
     }
 
     /// Inverse of `to_persisted`. Fails if any base64 field is malformed or
     /// the identity key bytes aren't a valid `IdentityKeyPair`.
-    pub fn try_from_persisted(p: PersistedAccount) -> Result<Self, SignalError> {
+    pub fn try_from_persisted(
+        p: PersistedAccount,
+        s: AccountSecrets,
+    ) -> Result<Self, SignalError> {
         let decode = |s: &str, what: &str| {
             BASE64_STANDARD
                 .decode(s)
                 .map_err(|e| SignalError::Other(format!("decode {what}: {e}")))
         };
-        let aci_bytes = decode(&p.aci_identity, "aci_identity")?;
-        let pni_bytes = decode(&p.pni_identity, "pni_identity")?;
+        let aci_bytes = decode(&s.aci_identity_b64, "aci_identity")?;
+        let pni_bytes = decode(&s.pni_identity_b64, "pni_identity")?;
         let aci_identity = IdentityKeyPair::try_from(aci_bytes.as_slice())
             .map_err(|e| SignalError::Other(format!("parse aci_identity: {e}")))?;
         let pni_identity = IdentityKeyPair::try_from(pni_bytes.as_slice())
             .map_err(|e| SignalError::Other(format!("parse pni_identity: {e}")))?;
         Ok(Self {
             phone: p.phone,
-            password: p.password,
+            password: s.password,
             aci_identity,
             pni_identity,
             aci: p.aci,
             pni: p.pni,
-            master_key: decode(&p.master_key, "master_key")?,
-            profile_key: decode(&p.profile_key, "profile_key")?,
+            master_key: decode(&s.master_key_b64, "master_key")?,
+            profile_key: decode(&s.profile_key_b64, "profile_key")?,
             registration_id: p.registration_id,
         })
     }
@@ -1568,10 +1585,12 @@ mod tests {
     #[test]
     fn test_persisted_account_roundtrip() {
         let original = SignalAccount::dummy("+15555550123");
-        let persisted = original.to_persisted();
-        let json = serde_json::to_string(&persisted).unwrap();
+        let (public, secrets) = original.to_persisted();
+        // Only the public half is serialized to disk; secrets travel out of
+        // band via the OS keyring (`persistence` module).
+        let json = serde_json::to_string(&public).unwrap();
         let parsed: PersistedAccount = serde_json::from_str(&json).unwrap();
-        let restored = SignalAccount::try_from_persisted(parsed).unwrap();
+        let restored = SignalAccount::try_from_persisted(parsed, secrets).unwrap();
 
         assert_eq!(restored.phone, original.phone);
         assert_eq!(restored.password, original.password);

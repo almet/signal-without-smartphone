@@ -36,11 +36,24 @@ cbc = { version = "0.1", features = ["alloc"] }
 thiserror = "2"
 openssl = { version = "0.10", features = ["vendored"] }
 
+# Cross-OS native keyring for storing per-account secrets (passwords,
+# identity key pairs, master/profile keys).
+keyring-core = "1"
+
 # Signal Protocol (official Rust implementation) — used for proper session
 # establishment and encrypted sync messages after device linking.
 libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.87.4" }
 signal-crypto = { git = "https://github.com/signalapp/libsignal", tag = "v0.87.4" }
 tokio = { version = "1", features = ["rt", "macros"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
 
 [patch.crates-io]
 curve25519-dalek = { git = 'https://github.com/signalapp/curve25519-dalek', tag = 'signal-curve25519-4.1.3' }
