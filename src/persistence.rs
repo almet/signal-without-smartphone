@@ -9,7 +9,7 @@
 //! All cryptographic material (password, identity key pairs, master/profile
 //! keys) lives in the OS-native keyring under service name "signal-setup",
 //! with one entry per phone number whose value is a JSON blob of all
-//! secrets — one Keychain ACL prompt per account, not one per field.
+//! secrets. That means one Keychain ACL prompt per account, not one per field.
 //!
 //! Set `SIGNAL_SETUP_CONFIG_DIR` to override the file location (used by
 //! tests). Tests also force the keyring backend to the in-memory sample
@@ -140,17 +140,7 @@ fn delete_secrets(phone: &str) -> Result<(), SignalError> {
 /// if no file exists. Performs the one-time dev migration if needed.
 fn read_all() -> Result<Vec<PersistedAccount>, SignalError> {
     migrate_dev_state_if_present()?;
-
-    let Some(path) = accounts_path() else {
-        return Ok(vec![]);
-    };
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(SignalError::Other(format!("read {}: {e}", path.display()))),
-    };
-    serde_json::from_slice(&bytes)
-        .map_err(|e| SignalError::Other(format!("parse {}: {e}", path.display())))
+    read_accounts_raw()
 }
 
 /// Write the full array of public account metadata back to disk, replacing
@@ -177,7 +167,7 @@ fn write_all(accounts: &[PersistedAccount]) -> Result<(), SignalError> {
 /// with only the public fields. Same for any legacy single-account
 /// `account.json`. Runs at most once because the source state is rewritten.
 ///
-/// End-user migration is NOT supported — users on the old format should
+/// End-user migration is NOT supported. Users on the old format should
 /// relink their accounts.
 fn migrate_dev_state_if_present() -> Result<(), SignalError> {
     migrate_legacy_account_json()?;
@@ -257,7 +247,7 @@ fn migrate_accounts_json_with_secrets() -> Result<(), SignalError> {
         Err(e) => return Err(SignalError::Other(format!("read {}: {e}", path.display()))),
     };
 
-    // Try the legacy (with-secrets) array first — its required fields are a
+    // Try the legacy (with-secrets) array first. Its required fields are a
     // superset of the new format, so a legacy blob also parses as new but
     // the reverse isn't true. Test legacy first to detect the upgrade case.
     let Ok(legacy) = serde_json::from_slice::<Vec<LegacyAccount>>(&bytes) else {
@@ -274,8 +264,10 @@ fn migrate_accounts_json_with_secrets() -> Result<(), SignalError> {
     Ok(())
 }
 
-/// Read the public-metadata file without triggering migration. Used during
-/// the migration step itself to avoid infinite recursion.
+/// Read and parse the public-metadata file, without triggering migration.
+/// Returns an empty Vec if the file doesn't exist. `read_all` adds the
+/// migration step on top; the migration code calls this directly to avoid
+/// recursing back through `read_all`.
 fn read_accounts_raw() -> Result<Vec<PersistedAccount>, SignalError> {
     let Some(path) = accounts_path() else {
         return Ok(vec![]);
@@ -306,7 +298,7 @@ pub fn list() -> Result<Vec<SignalAccount>, SignalError> {
 
 /// Add `account` to the saved list, replacing any existing entry with the
 /// same phone number. Public metadata is written to disk; secrets are
-/// written to the keyring (one entry per field).
+/// written to the keyring as a single entry per phone.
 pub fn save(account: &SignalAccount) -> Result<(), SignalError> {
     let (public, secrets) = account.to_persisted();
     write_secrets(&public.phone, &secrets)?;
@@ -355,7 +347,7 @@ mod tests {
 
     /// `SIGNAL_SETUP_CONFIG_DIR` and the keyring default store are
     /// process-global, so persistence tests are serialized through this
-    /// mutex to keep parallel `cargo test` runs sane.
+    /// mutex to stop parallel `cargo test` runs from racing on them.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn with_tempdir<F: FnOnce()>(f: F) {
@@ -371,7 +363,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::env::remove_var("SIGNAL_SETUP_CONFIG_DIR");
         // Note: SIGNAL_SETUP_TEST_KEYRING stays set across tests in the
-        // process — that's fine, init_keyring runs once.
+        // process. That's fine, init_keyring runs once.
     }
 
     #[test]

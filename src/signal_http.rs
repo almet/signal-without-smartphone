@@ -1,18 +1,18 @@
-//! Signal HTTP API client — a pure-Rust replacement for signal-cli.
+//! Signal HTTP API client: a pure-Rust replacement for signal-cli.
 //!
 //! This module talks directly to Signal's service endpoints over HTTPS,
 //! eliminating the need for a Java runtime or the signal-cli binary.
 //!
 //! Registration flow:
-//!   1. `request_verification_code` → sends an SMS/voice code via Signal's API
-//!   2. `verify_and_register`       → verifies the code and registers the account
-//!                                    (generates all required cryptographic keys)
+//!   1. `request_verification_code` sends an SMS/voice code via Signal's API.
+//!   2. `verify_and_register` verifies the code and registers the account,
+//!      generating all required cryptographic keys.
 //!
 //! Device-linking flow (after registration):
-//!   3. `link_device` → parses a `tsdevice://` (or `sgnl://linkdevice`) URI from
-//!                      Signal Desktop's QR code and provisions Desktop as a linked
-//!                      device via Signal's provisioning API, then sends the
-//!                      initial sync messages using libsignal-protocol.
+//!   3. `link_device` parses a `tsdevice://` (or `sgnl://linkdevice`) URI from
+//!      Signal Desktop's QR code and provisions Desktop as a linked device via
+//!      Signal's provisioning API, then sends the initial sync messages using
+//!      libsignal-protocol.
 
 use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use base64::prelude::*;
@@ -125,7 +125,7 @@ struct ContentProto {
     sync_message: Option<SyncMsgProto>,
 }
 
-/// Minimal SyncMessage — contacts.isComplete = true + empty blocked list
+/// Minimal SyncMessage: contacts.isComplete = true and an empty blocked list
 /// tells Signal Desktop that sync is done and there are no existing contacts.
 #[derive(Clone, PartialEq, ProstMessage)]
 struct SyncMsgProto {
@@ -155,9 +155,9 @@ pub struct SignalAccount {
     pub phone: String,
     /// Base64-encoded random password used for HTTP basic auth.
     pub password: String,
-    /// ACI identity key pair (Account Identifier) — libsignal-protocol types.
+    /// ACI identity key pair (Account Identifier), a libsignal-protocol type.
     aci_identity: IdentityKeyPair,
-    /// PNI identity key pair (Phone Number Identity) — libsignal-protocol types.
+    /// PNI identity key pair (Phone Number Identity), a libsignal-protocol type.
     pni_identity: IdentityKeyPair,
     /// ACI UUID returned by Signal after successful registration.
     pub aci: Option<String>,
@@ -178,7 +178,7 @@ pub struct SignalAccount {
 /// Non-sensitive metadata for a saved account, serialized to disk.
 ///
 /// Secret material (password, identity key pairs, master/profile keys) is
-/// stored in the OS keyring as separate entries — see `AccountSecrets` and
+/// stored in the OS keyring as separate entries. See `AccountSecrets` and
 /// `crate::persistence` for the keyring schema.
 #[derive(Serialize, Deserialize)]
 pub struct PersistedAccount {
@@ -257,8 +257,6 @@ impl SignalAccount {
 
     /// Create a fake account for demo/testing purposes.
     pub fn dummy(phone: &str) -> Self {
-        use rand::rngs::StdRng;
-        use rand::{RngCore, SeedableRng};
         let mut rng = StdRng::from_os_rng();
         let aci_identity = IdentityKeyPair::generate(&mut rng);
         let pni_identity = IdentityKeyPair::generate(&mut rng);
@@ -737,7 +735,7 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
     // Signal Desktop waits for sync messages from device 1 after linking.
     // We send a SyncMessage{contacts.isComplete=true, blocked={}} so Desktop
     // knows sync is complete and transitions to the main screen.
-    // We ignore errors here — Desktop will eventually time out gracefully.
+    // We ignore errors here: Desktop will eventually time out gracefully.
     let _ = send_linked_device_sync(&client, account, &mut rng);
 
     Ok(())
@@ -911,7 +909,7 @@ fn send_linked_device_sync(
         encrypt_with_libsignal(&plaintext, account, &bundle, rng).await
     })?;
 
-    // Send via Signal's message endpoint (device 1 → device 2, same account).
+    // Send via Signal's message endpoint (device 1 to device 2, same account).
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct OutMsg {
@@ -984,7 +982,7 @@ async fn encrypt_with_libsignal(
 
     // Create an in-memory protocol store for the sender (primary device)
     let mut store = InMemSignalProtocolStore::new(
-        account.aci_identity.clone(),
+        account.aci_identity,
         account.registration_id,
     )?;
 
@@ -1310,11 +1308,8 @@ fn parse_device_uri(uri: &str) -> Result<(String, Vec<u8>), SignalError> {
     let params: HashMap<String, String> = query_str
         .split('&')
         .filter_map(|kv| {
-            let mut parts = kv.splitn(2, '=');
-            let k = parts.next()?;
-            let v = parts.next()?;
-            let v_decoded = percent_decode(v);
-            Some((k.to_string(), v_decoded))
+            let (k, v) = kv.split_once('=')?;
+            Some((k.to_string(), percent_decode(v)))
         })
         .collect();
 
@@ -1368,10 +1363,10 @@ fn percent_decode(s: &str) -> String {
 ///
 /// Algorithm (matches Signal's `ProvisioningCipher`):
 ///   1. Generate ephemeral X25519 key pair.
-///   2. ECDH with `device_pub` → 32-byte shared secret.
-///   3. HKDF-SHA256 (no salt, info = "TextSecure Provisioning Message") → 64 bytes.
-///      First 32 bytes = AES-256 key, last 32 bytes = HMAC-SHA256 key.
-///   4. Encrypt the serialised proto with AES-256-CBC + PKCS7.
+///   2. ECDH with `device_pub` yields a 32-byte shared secret.
+///   3. HKDF-SHA256 (no salt, info = "TextSecure Provisioning Message") yields
+///      64 bytes: first 32 are the AES-256 key, last 32 the HMAC-SHA256 key.
+///   4. Encrypt the serialised proto with AES-256-CBC and PKCS7.
 ///   5. Authenticate with HMAC-SHA256 over `[VERSION || IV || CIPHERTEXT]`.
 ///   6. Return `ProvisionEnvelope { public_key: ephemeral_djb, body: VERSION || IV || CT || MAC }`.
 fn encrypt_provision_message(
@@ -1567,13 +1562,13 @@ mod tests {
     }
 
     /// Smoke test: hit Signal's production server with a real HTTPS request
-    /// and confirm the client can complete the round-trip — TLS handshake
+    /// and confirm the client can complete the round-trip: TLS handshake
     /// against the pinned leaf certificate, request framing, and JSON
     /// response parsing.
     ///
     /// A real network/TLS failure (`SignalError::Http`) fails the test. Any
-    /// other outcome — a session response, a captcha challenge, or an API
-    /// rejection — proves the client successfully talked to Signal.
+    /// other outcome (a session response, a captcha challenge, or an API
+    /// rejection) proves the client successfully talked to Signal.
     #[test]
     fn signal_production_roundtrip() {
         // E.164-shaped placeholder. Whether Signal accepts the session,

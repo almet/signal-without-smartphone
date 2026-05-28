@@ -29,8 +29,8 @@ pub fn is_configured() -> bool {
 /// Pick a profile name for a brand-new account being registered.
 ///
 /// If Signal Desktop's default profile dir already exists and is not
-/// already claimed (i.e. no other saved account is using it), reuse it —
-/// the user almost certainly wants their existing Desktop install to be
+/// already claimed (i.e. no other saved account is using it), reuse it.
+/// The user almost certainly wants their existing Desktop install to be
 /// the home for this number rather than getting a fresh empty profile.
 /// Otherwise derive a per-phone name.
 pub fn choose_profile_for_new_account(phone: &str, taken: &[String]) -> String {
@@ -61,9 +61,11 @@ pub fn profile_path(profile: &str) -> Option<PathBuf> {
 /// after this process exits. The directory is created if missing so
 /// Desktop's first-run flow can populate it.
 pub fn launch(profile: &str) -> Result<(), String> {
-    let data_dir = profile_path(profile).ok_or_else(|| {
-        "Could not determine Signal Desktop data directory for this platform".to_string()
-    })?;
+    let Some(data_dir) = profile_path(profile) else {
+        return Err(
+            "Could not determine Signal Desktop data directory for this platform".to_string(),
+        );
+    };
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
         return Err(format!("create {}: {e}", data_dir.display()));
     }
@@ -79,8 +81,8 @@ pub fn launch(profile: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn spawn_detached(app_bundle: &std::path::Path, data_dir: &std::path::Path) -> std::io::Result<()> {
     // `open -n -a Signal.app --args …` lets multiple instances run
-    // concurrently — required when several accounts each have their own
-    // profile dir.
+    // concurrently, which is required when several accounts each have their
+    // own profile dir.
     Command::new("open")
         .arg("-n")
         .arg("-a")

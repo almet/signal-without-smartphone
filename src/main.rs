@@ -158,9 +158,9 @@ struct SignalSetupApp {
     device_uri: String,
     status: Status,
     loading: bool,
-    /// Session ID returned by the verification session API (steps 1–3).
+    /// Session ID returned by the verification session API (steps 1 to 3).
     session_id: Option<String>,
-    /// Account key material after successful registration (steps 3–4).
+    /// Account key material after successful registration (steps 3 to 4).
     signal_account: Option<SignalAccount>,
     result_rx: Option<mpsc::Receiver<WorkResult>>,
     /// Set to true when registration returns 409 (existing account supports
@@ -168,12 +168,12 @@ struct SignalSetupApp {
     device_transfer_available: bool,
     /// True once Signal has asked us for a captcha during this session. The
     /// step indicator uses it to decide whether "Captcha" is a step the user
-    /// can navigate back to — otherwise it was skipped and shouldn't be.
+    /// can navigate back to; otherwise it was skipped and shouldn't be.
     captcha_was_required: bool,
     /// Cached account list. Read once on startup (and refreshed after
     /// save/delete) so the Welcome screen, which paints every frame,
-    /// doesn't hit the OS keyring on every repaint — that would trigger
-    /// a Keychain prompt on each item until the user clicks "Always
+    /// doesn't hit the OS keyring on every repaint. A repaint read would
+    /// trigger a Keychain prompt on each item until the user clicks "Always
     /// Allow", and would block the UI thread regardless.
     accounts: Vec<SignalAccount>,
 }
@@ -224,7 +224,7 @@ impl SignalSetupApp {
     /// Jump back to a previously-completed step. Invalidates any state owned
     /// by later steps so the flow restarts cleanly from `target`.
     fn jump_back_to_step(&mut self, target: usize) {
-        // Drop any in-flight worker — its result would land in the wrong step.
+        // Drop any in-flight worker; its result would land in the wrong step.
         self.result_rx = None;
         self.loading = false;
         self.status = Status::None;
@@ -409,11 +409,10 @@ impl SignalSetupApp {
         step_header(ui, "Welcome back", "Saved Signal accounts");
 
         if self.accounts.is_empty() {
-            // No accounts left → drop straight into the registration flow.
+            // No accounts left, so drop straight into the registration flow.
             self.step = Step::PhoneInput;
             return;
         }
-        let accounts = self.accounts.clone();
 
         ui.label(
             RichText::new("Pick an account to re-link Signal Desktop, or register a new one:")
@@ -428,7 +427,7 @@ impl SignalSetupApp {
         }
         let mut action: Option<WelcomeAction> = None;
 
-        for account in &accounts {
+        for account in &self.accounts {
             egui::Frame::none()
                 .fill(INSET_BG)
                 .stroke(egui::Stroke::new(1.0, BORDER))
@@ -863,7 +862,7 @@ impl SignalSetupApp {
     fn ui_complete(&mut self, ui: &mut egui::Ui) {
         ui.add_space(16.0);
 
-        // Snapshot the account ahead of the closure — both the launch and
+        // Snapshot the account ahead of the closure; both the launch and
         // re-link buttons need it, and the closure borrows `self` mutably.
         let profile = self
             .signal_account
@@ -1022,11 +1021,10 @@ fn setup_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// Visual step indicator drawn with egui's painter (circles + connecting lines).
-/// Draws the four-step indicator and returns the step number the user
-/// clicked, if any. Only steps strictly before `current` are clickable —
-/// future steps can't be jumped to. Step 2 (Captcha) is also unclickable
-/// when Signal never asked for one this session.
+/// Draw the four-step indicator (circles and connecting lines) and return the
+/// step number the user clicked, if any. Only steps strictly before `current`
+/// are clickable; future steps can't be jumped to. Step 2 (Captcha) is also
+/// unclickable when Signal never asked for one this session.
 fn draw_step_indicator(
     ui: &mut egui::Ui,
     current: usize,
@@ -1069,7 +1067,7 @@ fn draw_step_indicator(
         let is_done = step < current;
         let is_active = step == current;
         // Past steps are clickable, except Captcha when it was skipped.
-        let is_clickable = is_done && !(step == 2 && !captcha_was_required);
+        let is_clickable = is_done && (captcha_was_required || step != 2);
 
         let cx = outer_rect.left() + step_width * (i as f32 + 0.5);
         let cy = outer_rect.top() + circle_radius;
@@ -1171,7 +1169,7 @@ fn step_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
 }
 
 /// Soft banner reporting whether Signal Desktop is available on this machine.
-/// Linking won't work without it, but we don't block the flow — the user
+/// Linking won't work without it, but we don't block the flow: the user
 /// might install it before reaching step 4.
 fn show_signal_desktop_status(ui: &mut egui::Ui) {
     let installed = signal_desktop::is_installed();
@@ -1190,7 +1188,7 @@ fn show_signal_desktop_status(ui: &mut egui::Ui) {
             INFO_TEXT,
         ),
         (false, _) => (
-            "Signal Desktop was not detected. If it isn't installed yet, install it now — \
+            "Signal Desktop was not detected. If it isn't installed yet, install it now; \
              otherwise this is just a detection miss and you can proceed."
                 .to_string(),
             INFO_BG,
@@ -1393,15 +1391,15 @@ fn format_error_chain(err: &dyn std::error::Error) -> String {
     let mut out = err.to_string();
     let mut src = err.source();
     while let Some(cause) = src {
-        out.push_str(&format!(" — caused by: {cause}"));
+        out.push_str(&format!(", caused by: {cause}"));
         src = cause.source();
     }
     out
 }
 
 /// Decode the embedded PNG into the RGBA buffer eframe wants for the window
-/// icon. Falls back to an empty icon on failure rather than crashing — a
-/// missing dock badge isn't worth panicking over.
+/// icon. Returns an empty icon if decoding fails, so a bad icon never blocks
+/// startup.
 fn load_window_icon() -> egui::IconData {
     const PNG: &[u8] = include_bytes!("../assets/logo.png");
     match image::load_from_memory(PNG) {

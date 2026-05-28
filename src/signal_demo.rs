@@ -1,6 +1,9 @@
 // Drop-in replacement for signal_http that simulates the full registration and
 // linking flow with fake delays. Used with `--demo` to test the UI without
 // hitting Signal's servers or needing a real phone number.
+//
+// The phone number `+0...` forces the captcha branch and the code `000000`
+// forces the device-transfer branch, so both flows are reachable in the demo.
 
 use crate::signal_http::{SignalAccount, SignalError, VerificationRequest};
 use std::thread;
@@ -16,7 +19,6 @@ pub fn request_verification_code(
 ) -> Result<VerificationRequest, SignalError> {
     fake_delay();
 
-    // Trigger the captcha flow if the phone number starts with +0
     if phone.starts_with("+0") {
         return Ok(VerificationRequest::CaptchaRequired {
             session_id: "demo-session-captcha".into(),
@@ -63,7 +65,7 @@ pub fn link_device(
 ) -> Result<(), SignalError> {
     fake_delay();
 
-    if !uri.contains("tsdevice://") && !uri.contains("sgnl://") {
+    if !["tsdevice://", "sgnl://"].iter().any(|scheme| uri.contains(scheme)) {
         return Err(SignalError::InvalidUri(
             "Expected a tsdevice:// or sgnl:// URI".into(),
         ));
