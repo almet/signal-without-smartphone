@@ -98,6 +98,7 @@ Same set of changes as 3.0.1 — released from a parallel branch.
 - GitHub Actions workflow publishing binaries on release.
 
 [Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.1.0...HEAD
+[3.1.1]: https://github.com/almet/signal-without-smartphone/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/almet/signal-without-smartphone/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/almet/signal-without-smartphone/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/almet/signal-without-smartphone/compare/v3.0.0...v3.0.1
