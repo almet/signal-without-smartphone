@@ -4906,18 +4906,26 @@ dependencies = [
 name = "signal-setup"
 version = "3.1.1"
 dependencies = [
+ "arboard",
+ "eframe",
+ "egui",
+ "image",
+ "rxing",
+ "signal-setup-core",
+]
+
+[[package]]
+name = "signal-setup-core"
+version = "3.1.1"
+dependencies = [
  "aes",
  "apple-native-keyring-store",
- "arboard",
  "base64",
  "cbc",
  "dbus-secret-service-keyring-store",
  "dirs",
- "eframe",
- "egui",
  "hkdf",
  "hmac",
- "image",
  "keyring-core",
  "libsignal-protocol",
  "prost 0.13.5",
@@ -4925,7 +4933,6 @@ dependencies = [
  "rand_core 0.6.4",
  "reqwest",
  "rustls",
- "rxing",
  "serde",
  "serde_json",
  "sha2",

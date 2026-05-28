@@ -1,8 +1,3 @@
-mod persistence;
-mod signal_demo;
-mod signal_desktop;
-mod signal_http;
-
 use arboard::Clipboard;
 use eframe::egui;
 use egui::RichText;
@@ -11,7 +6,9 @@ use rxing::{
     common::HybridBinarizer, BinaryBitmap, BufferedImageLuminanceSource, DecodeHintType,
     DecodeHintValue, MultiFormatReader, Reader,
 };
-use signal_http::SignalAccount;
+use signal_setup_core as core;
+use signal_setup_core::{demo, desktop, persistence};
+use signal_setup_core::SignalAccount;
 use std::process::Command;
 use std::sync::mpsc;
 
@@ -29,18 +26,19 @@ fn mode() -> Mode {
     MODE.get().copied().unwrap_or_default()
 }
 
-// Dispatch helpers that route to signal_http or signal_demo based on the mode.
+// Dispatch helpers that route to the core crate or the demo backend based on
+// the mode.
 mod api {
     use super::*;
-    use signal_http::{SignalError, VerificationRequest};
+    use signal_setup_core::{SignalError, VerificationRequest};
 
     pub fn request_verification_code(
         phone: &str,
         captcha: Option<&str>,
     ) -> Result<VerificationRequest, SignalError> {
         match mode() {
-            Mode::Demo => signal_demo::request_verification_code(phone, captcha),
-            _ => signal_http::request_verification_code(phone, captcha),
+            Mode::Demo => demo::request_verification_code(phone, captcha),
+            _ => core::request_verification_code(phone, captcha),
         }
     }
 
@@ -49,8 +47,8 @@ mod api {
         token: &str,
     ) -> Result<VerificationRequest, SignalError> {
         match mode() {
-            Mode::Demo => signal_demo::submit_captcha(session_id, token),
-            _ => signal_http::submit_captcha(session_id, token),
+            Mode::Demo => demo::submit_captcha(session_id, token),
+            _ => core::submit_captcha(session_id, token),
         }
     }
 
@@ -62,16 +60,16 @@ mod api {
     ) -> Result<SignalAccount, SignalError> {
         match mode() {
             Mode::Demo => {
-                signal_demo::verify_and_register(phone, session_id, code, skip_device_transfer)
+                demo::verify_and_register(phone, session_id, code, skip_device_transfer)
             }
-            _ => signal_http::verify_and_register(phone, session_id, code, skip_device_transfer),
+            _ => core::verify_and_register(phone, session_id, code, skip_device_transfer),
         }
     }
 
     pub fn link_device(account: &SignalAccount, uri: &str) -> Result<(), SignalError> {
         match mode() {
-            Mode::Demo => signal_demo::link_device(account, uri),
-            _ => signal_http::link_device(account, uri),
+            Mode::Demo => demo::link_device(account, uri),
+            _ => core::link_device(account, uri),
         }
     }
 }
@@ -297,7 +295,7 @@ impl eframe::App for SignalSetupApp {
                         .filter_map(|a| a.desktop_profile.clone())
                         .collect();
                     account.desktop_profile = Some(
-                        signal_desktop::choose_profile_for_new_account(&account.phone, &taken),
+                        desktop::choose_profile_for_new_account(&account.phone, &taken),
                     );
                     if let Err(e) = persistence::save(&account) {
                         eprintln!("Warning: could not save account to disk: {e}");
@@ -470,7 +468,7 @@ impl SignalSetupApp {
                                 action = Some(WelcomeAction::Relink(account.clone()));
                             }
                             let can_launch = account.desktop_profile.is_some()
-                                && signal_desktop::is_installed();
+                                && desktop::is_installed();
                             if ui
                                 .add_enabled(
                                     can_launch,
@@ -513,7 +511,7 @@ impl SignalSetupApp {
 
         match action {
             Some(WelcomeAction::Launch(profile)) => {
-                if let Err(e) = signal_desktop::launch(&profile) {
+                if let Err(e) = desktop::launch(&profile) {
                     self.status =
                         Status::Error(format!("Could not launch Signal Desktop: {e}"));
                 } else {
@@ -565,10 +563,10 @@ impl SignalSetupApp {
             let phone = self.phone.clone();
             self.spawn(ctx.clone(), move || {
                 match api::request_verification_code(&phone, None) {
-                    Ok(signal_http::VerificationRequest::CodeSent { session_id }) => {
+                    Ok(core::VerificationRequest::CodeSent { session_id }) => {
                         WorkResult::RegisterOk { session_id }
                     }
-                    Ok(signal_http::VerificationRequest::CaptchaRequired { session_id }) => {
+                    Ok(core::VerificationRequest::CaptchaRequired { session_id }) => {
                         WorkResult::RegisterNeedsCaptcha { session_id }
                     }
                     Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
@@ -628,10 +626,10 @@ impl SignalSetupApp {
             let token = self.captcha_token.trim().to_string();
             self.spawn(ctx.clone(), move || {
                 match api::submit_captcha(&session_id, &token) {
-                    Ok(signal_http::VerificationRequest::CodeSent { session_id }) => {
+                    Ok(core::VerificationRequest::CodeSent { session_id }) => {
                         WorkResult::RegisterOk { session_id }
                     }
-                    Ok(signal_http::VerificationRequest::CaptchaRequired { session_id }) => {
+                    Ok(core::VerificationRequest::CaptchaRequired { session_id }) => {
                         WorkResult::RegisterNeedsCaptcha { session_id }
                     }
                     Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
@@ -736,7 +734,7 @@ impl SignalSetupApp {
             self.spawn(ctx.clone(), move || {
                 match api::verify_and_register(&phone, &session_id, &code, false) {
                     Ok(account) => WorkResult::VerifyOk { account },
-                    Err(signal_http::SignalError::DeviceTransferAvailable) => {
+                    Err(core::SignalError::DeviceTransferAvailable) => {
                         WorkResult::DeviceTransferAvailable
                     }
                     Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
@@ -769,7 +767,7 @@ impl SignalSetupApp {
             .as_ref()
             .and_then(|a| a.desktop_profile.clone());
         ui.horizontal(|ui| {
-            let can_launch = profile.is_some() && signal_desktop::is_installed();
+            let can_launch = profile.is_some() && desktop::is_installed();
             if ui
                 .add_enabled(
                     can_launch,
@@ -786,7 +784,7 @@ impl SignalSetupApp {
                 .clicked()
             {
                 let profile = profile.clone().unwrap();
-                match signal_desktop::launch(&profile) {
+                match desktop::launch(&profile) {
                     Ok(()) => {
                         self.status = Status::Info(format!(
                             "Signal Desktop launched (profile: {profile}). Show the QR code, then paste it below."
@@ -894,7 +892,7 @@ impl SignalSetupApp {
             ui.add_space(28.0);
 
             ui.horizontal(|ui| {
-                let can_launch = profile.is_some() && signal_desktop::is_installed();
+                let can_launch = profile.is_some() && desktop::is_installed();
                 if ui
                     .add_enabled(
                         can_launch,
@@ -941,7 +939,7 @@ impl SignalSetupApp {
         match action {
             Some(CompleteAction::Launch) => {
                 if let Some(p) = profile {
-                    if let Err(e) = signal_desktop::launch(&p) {
+                    if let Err(e) = desktop::launch(&p) {
                         self.status =
                             Status::Error(format!("Could not launch Signal Desktop: {e}"));
                     }
@@ -1172,8 +1170,8 @@ fn step_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
 /// Linking won't work without it, but we don't block the flow: the user
 /// might install it before reaching step 4.
 fn show_signal_desktop_status(ui: &mut egui::Ui) {
-    let installed = signal_desktop::is_installed();
-    let configured = signal_desktop::is_configured();
+    let installed = desktop::is_installed();
+    let configured = desktop::is_configured();
     let (msg, bg, border, fg) = match (installed, configured) {
         (true, true) => (
             "Signal Desktop detected and configured.".to_string(),
@@ -1425,7 +1423,7 @@ fn main() -> eframe::Result<()> {
         MODE.set(Mode::Demo).ok();
     } else if args.iter().any(|a| a == "--staging") {
         MODE.set(Mode::Staging).ok();
-        signal_http::enable_staging();
+        core::enable_staging();
     }
 
     let title = match mode() {

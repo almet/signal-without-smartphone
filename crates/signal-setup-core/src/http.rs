@@ -14,41 +14,25 @@
 //!      Signal's provisioning API, then sends the initial sync messages using
 //!      libsignal-protocol.
 
-use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use base64::prelude::*;
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use libsignal_protocol::{
-    self as sigprot, CiphertextMessage, DeviceId, IdentityKey, IdentityKeyPair,
-    InMemSignalProtocolStore, KyberPreKeyId, PreKeyBundle, ProtocolAddress,
-    SignedPreKeyId,
-};
+use libsignal_protocol::{self as sigprot, IdentityKey, IdentityKeyPair};
 use prost::Message as ProstMessage;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use rand::{Rng, RngCore};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 use std::collections::HashMap;
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
+use x25519_dalek::PublicKey as X25519Public;
 
-/// `libsignal-protocol` uses rand 0.9, while `x25519-dalek` and `xeddsa` still
-/// use rand_core 0.6 traits. This wrapper bridges the two so a single `StdRng`
-/// instance can be passed to both APIs.
-struct Rng06Compat<'a>(&'a mut StdRng);
-
-impl rand_core_06::RngCore for Rng06Compat<'_> {
-    fn next_u32(&mut self) -> u32 { self.0.next_u32() }
-    fn next_u64(&mut self) -> u64 { self.0.next_u64() }
-    fn fill_bytes(&mut self, dest: &mut [u8]) { self.0.fill_bytes(dest) }
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core_06::Error> {
-        self.0.fill_bytes(dest);
-        Ok(())
-    }
-}
-
-impl rand_core_06::CryptoRng for Rng06Compat<'_> {}
+use crate::crypto::{
+    encrypt_provision_message, encrypt_with_libsignal, parse_uuid_bytes, pem_to_der,
+    random_password, DevicePreKeyBundle,
+};
+use crate::proto::{
+    ContentProto, ProvisionMessage, SyncBlockedProto, SyncContactsProto, SyncMsgProto,
+};
+use crate::types::{SignalAccount, SignalError, VerificationRequest};
 
 const SIGNAL_PROD: &str = "https://chat.signal.org";
 const SIGNAL_STAGING: &str = "https://chat.staging.signal.org";
@@ -65,248 +49,6 @@ fn signal_api() -> &'static str {
     } else {
         SIGNAL_PROD
     }
-}
-
-// Inline protobuf types below avoid a build.rs / protoc dependency.
-
-/// Signal's provisioning message, sent by a primary device to a secondary device.
-/// Field numbers match `Provisioning.proto` from Signal's repository.
-#[derive(Clone, PartialEq, ProstMessage)]
-struct ProvisionMessage {
-    #[prost(bytes = "vec", optional, tag = "1")]
-    aci_identity_key_public: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "2")]
-    aci_identity_key_private: Option<Vec<u8>>,
-    #[prost(string, optional, tag = "3")]
-    number: Option<String>,
-    #[prost(string, optional, tag = "4")]
-    provisioning_code: Option<String>,
-    #[prost(string, optional, tag = "5")]
-    user_agent: Option<String>,
-    #[prost(bytes = "vec", optional, tag = "6")]
-    profile_key: Option<Vec<u8>>,
-    #[prost(bool, optional, tag = "7")]
-    read_receipts: Option<bool>,
-    #[prost(string, optional, tag = "8")]
-    aci: Option<String>,
-    #[prost(uint32, optional, tag = "9")]
-    provisioning_version: Option<u32>,
-    #[prost(string, optional, tag = "10")]
-    pni: Option<String>,
-    #[prost(bytes = "vec", optional, tag = "11")]
-    pni_identity_key_public: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "12")]
-    pni_identity_key_private: Option<Vec<u8>>,
-    /// Deprecated in newer Signal versions, but still required by Signal Desktop
-    /// when linking: without it Desktop throws and refuses to complete provisioning.
-    #[prost(bytes = "vec", optional, tag = "13")]
-    master_key: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "17")]
-    aci_binary: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "18")]
-    pni_binary: Option<Vec<u8>>,
-}
-
-/// Envelope wrapping an encrypted `ProvisionMessage`.
-#[derive(Clone, PartialEq, ProstMessage)]
-struct ProvisionEnvelope {
-    #[prost(bytes = "vec", optional, tag = "1")]
-    public_key: Option<Vec<u8>>,
-    #[prost(bytes = "vec", optional, tag = "2")]
-    body: Option<Vec<u8>>,
-}
-
-// Signal Protocol wire types used for the proactive post-link sync below.
-
-/// Plaintext content wrapper before Signal Protocol encryption (SignalService.proto).
-#[derive(Clone, PartialEq, ProstMessage)]
-struct ContentProto {
-    #[prost(message, optional, tag = "2")]
-    sync_message: Option<SyncMsgProto>,
-}
-
-/// Minimal SyncMessage: contacts.isComplete = true and an empty blocked list
-/// tells Signal Desktop that sync is done and there are no existing contacts.
-#[derive(Clone, PartialEq, ProstMessage)]
-struct SyncMsgProto {
-    #[prost(message, optional, tag = "1")]
-    contacts: Option<SyncContactsProto>,
-    #[prost(message, optional, tag = "4")]
-    blocked: Option<SyncBlockedProto>,
-}
-
-#[derive(Clone, PartialEq, ProstMessage)]
-struct SyncContactsProto {
-    /// `true` means "I've sent all my contacts (there are none)."
-    #[prost(bool, optional, tag = "6")]
-    is_complete: Option<bool>,
-}
-
-/// Empty blocked list.
-#[derive(Clone, PartialEq, ProstMessage)]
-struct SyncBlockedProto {}
-
-
-/// All cryptographic material for a registered Signal account.
-///
-/// Created by `verify_and_register` and required for `link_device`.
-#[derive(Clone)]
-pub struct SignalAccount {
-    pub phone: String,
-    /// Base64-encoded random password used for HTTP basic auth.
-    pub password: String,
-    /// ACI identity key pair (Account Identifier), a libsignal-protocol type.
-    aci_identity: IdentityKeyPair,
-    /// PNI identity key pair (Phone Number Identity), a libsignal-protocol type.
-    pni_identity: IdentityKeyPair,
-    /// ACI UUID returned by Signal after successful registration.
-    pub aci: Option<String>,
-    /// PNI uuid returned by Signal after successful registration.
-    pub pni: Option<String>,
-    /// 32-byte master key, generated once and included in every provisioning message.
-    master_key: Vec<u8>,
-    /// 32-byte random profile key.
-    profile_key: Vec<u8>,
-    /// 14-bit random registration ID, included in Signal Protocol message headers.
-    registration_id: u32,
-    /// Name of the Signal Desktop `--user-data-dir` profile bound to this
-    /// account. `None` for accounts saved by older builds; assigned at
-    /// registration time for new ones. See `crate::signal_desktop`.
-    pub desktop_profile: Option<String>,
-}
-
-/// Non-sensitive metadata for a saved account, serialized to disk.
-///
-/// Secret material (password, identity key pairs, master/profile keys) is
-/// stored in the OS keyring as separate entries. See `AccountSecrets` and
-/// `crate::persistence` for the keyring schema.
-#[derive(Serialize, Deserialize)]
-pub struct PersistedAccount {
-    pub phone: String,
-    pub aci: Option<String>,
-    pub pni: Option<String>,
-    pub registration_id: u32,
-    #[serde(default)]
-    pub desktop_profile: Option<String>,
-}
-
-/// Sensitive fields for a `SignalAccount`. Serialized to JSON and stored as
-/// a single keyring entry per phone (one Keychain prompt per account rather
-/// than one per field).
-///
-/// Binary fields are base64-encoded because keyring backends store strings.
-#[derive(Serialize, Deserialize)]
-pub struct AccountSecrets {
-    pub password: String,
-    pub aci_identity_b64: String,
-    pub pni_identity_b64: String,
-    pub master_key_b64: String,
-    pub profile_key_b64: String,
-}
-
-impl SignalAccount {
-    /// Split into the on-disk metadata and the keyring-bound secrets.
-    pub fn to_persisted(&self) -> (PersistedAccount, AccountSecrets) {
-        let public = PersistedAccount {
-            phone: self.phone.clone(),
-            aci: self.aci.clone(),
-            pni: self.pni.clone(),
-            registration_id: self.registration_id,
-            desktop_profile: self.desktop_profile.clone(),
-        };
-        let secrets = AccountSecrets {
-            password: self.password.clone(),
-            aci_identity_b64: BASE64_STANDARD.encode(self.aci_identity.serialize()),
-            pni_identity_b64: BASE64_STANDARD.encode(self.pni_identity.serialize()),
-            master_key_b64: BASE64_STANDARD.encode(&self.master_key),
-            profile_key_b64: BASE64_STANDARD.encode(&self.profile_key),
-        };
-        (public, secrets)
-    }
-
-    /// Inverse of `to_persisted`. Fails if any base64 field is malformed or
-    /// the identity key bytes aren't a valid `IdentityKeyPair`.
-    pub fn try_from_persisted(
-        p: PersistedAccount,
-        s: AccountSecrets,
-    ) -> Result<Self, SignalError> {
-        let decode = |s: &str, what: &str| {
-            BASE64_STANDARD
-                .decode(s)
-                .map_err(|e| SignalError::Other(format!("decode {what}: {e}")))
-        };
-        let aci_bytes = decode(&s.aci_identity_b64, "aci_identity")?;
-        let pni_bytes = decode(&s.pni_identity_b64, "pni_identity")?;
-        let aci_identity = IdentityKeyPair::try_from(aci_bytes.as_slice())
-            .map_err(|e| SignalError::Other(format!("parse aci_identity: {e}")))?;
-        let pni_identity = IdentityKeyPair::try_from(pni_bytes.as_slice())
-            .map_err(|e| SignalError::Other(format!("parse pni_identity: {e}")))?;
-        Ok(Self {
-            phone: p.phone,
-            password: s.password,
-            aci_identity,
-            pni_identity,
-            aci: p.aci,
-            pni: p.pni,
-            master_key: decode(&s.master_key_b64, "master_key")?,
-            profile_key: decode(&s.profile_key_b64, "profile_key")?,
-            registration_id: p.registration_id,
-            desktop_profile: p.desktop_profile,
-        })
-    }
-
-    /// Create a fake account for demo/testing purposes.
-    pub fn dummy(phone: &str) -> Self {
-        let mut rng = StdRng::from_os_rng();
-        let aci_identity = IdentityKeyPair::generate(&mut rng);
-        let pni_identity = IdentityKeyPair::generate(&mut rng);
-        let mut master_key = vec![0u8; 32];
-        rng.fill_bytes(&mut master_key);
-        let mut profile_key = vec![0u8; 32];
-        rng.fill_bytes(&mut profile_key);
-        Self {
-            phone: phone.to_string(),
-            password: "demo-password".into(),
-            aci_identity,
-            pni_identity,
-            aci: Some("demo-aci-uuid".into()),
-            pni: Some("demo-pni-uuid".into()),
-            master_key,
-            profile_key,
-            registration_id: 12345,
-            desktop_profile: None,
-        }
-    }
-}
-
-/// Error returned by all Signal API calls.
-#[derive(Debug, thiserror::Error)]
-pub enum SignalError {
-    #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("Signal API error {status}: {body}")]
-    Api { status: u16, body: String },
-    #[error("Captcha required")]
-    CaptchaRequired,
-    /// The existing account on this number supports device-to-device data
-    /// transfer. Signal requires the caller to explicitly opt out before
-    /// allowing a fresh registration. Retry with `skip_device_transfer = true`.
-    #[error("Device transfer available")]
-    DeviceTransferAvailable,
-    #[error("Invalid URI: {0}")]
-    InvalidUri(String),
-    #[error("Signal Protocol error: {0}")]
-    Protocol(#[from] sigprot::SignalProtocolError),
-    #[error("{0}")]
-    Other(String),
-}
-
-/// Result of `request_verification_code`.
-pub enum VerificationRequest {
-    /// Code sent; caller must supply the session id to `verify_and_register`.
-    CodeSent { session_id: String },
-    /// Signal requires captcha before sending the code.
-    CaptchaRequired { session_id: String },
 }
 
 /// Ask Signal to start a registration session for `phone`.
@@ -741,20 +483,6 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
     Ok(())
 }
 
-/// Parsed pre-key bundle for establishing a Signal Protocol session.
-struct DevicePreKeyBundle {
-    identity_key: IdentityKey,
-    registration_id: u32,
-    signed_prekey_id: u32,
-    signed_prekey_bytes: Vec<u8>,
-    signed_prekey_signature: Vec<u8>,
-    kyber_prekey_id: Option<u32>,
-    kyber_prekey_bytes: Option<Vec<u8>>,
-    kyber_prekey_signature: Option<Vec<u8>>,
-    one_time_prekey_id: Option<u32>,
-    one_time_prekey_bytes: Option<Vec<u8>>,
-}
-
 /// Fetch device 2's pre-key bundle, retrying for up to `timeout_secs` seconds
 /// to give Signal Desktop time to register and upload its pre-keys.
 fn fetch_device_prekeys(
@@ -967,102 +695,6 @@ fn send_linked_device_sync(
     Ok(())
 }
 
-/// Encrypt plaintext using libsignal-protocol's proper X3DH session
-/// establishment and Double Ratchet encryption.
-async fn encrypt_with_libsignal(
-    plaintext: &[u8],
-    account: &SignalAccount,
-    bundle: &DevicePreKeyBundle,
-    rng: &mut StdRng,
-) -> Result<CiphertextMessage, SignalError> {
-    let receiver_address = ProtocolAddress::new(
-        account.aci.clone().unwrap_or_default(),
-        DeviceId::try_from(2u32).expect("valid device id"),
-    );
-
-    // Create an in-memory protocol store for the sender (primary device)
-    let mut store = InMemSignalProtocolStore::new(
-        account.aci_identity,
-        account.registration_id,
-    )?;
-
-    // Parse the signed pre-key public key from the bundle
-    let signed_prekey_pub = sigprot::PublicKey::deserialize(&bundle.signed_prekey_bytes)
-        .map_err(|e| SignalError::Other(format!("parse signed prekey: {e}")))?;
-
-    // Build the pre-key bundle for session establishment.
-    // We need the Kyber pre-key if available; if not, we need a fallback.
-    let pre_key_bundle = if let (Some(kyber_id), Some(kyber_bytes), Some(kyber_sig)) = (
-        bundle.kyber_prekey_id,
-        bundle.kyber_prekey_bytes.as_ref(),
-        bundle.kyber_prekey_signature.as_ref(),
-    ) {
-        let kyber_pub = sigprot::kem::PublicKey::deserialize(kyber_bytes)
-            .map_err(|e| SignalError::Other(format!("parse kyber prekey: {e}")))?;
-
-        // Build one-time prekey option
-        let pre_key_opt = if let (Some(pk_id), Some(pk_bytes)) = (
-            bundle.one_time_prekey_id,
-            bundle.one_time_prekey_bytes.as_ref(),
-        ) {
-            let pk_pub = sigprot::PublicKey::deserialize(pk_bytes)
-                .map_err(|e| SignalError::Other(format!("parse prekey: {e}")))?;
-            Some((sigprot::PreKeyId::from(pk_id), pk_pub))
-        } else {
-            None
-        };
-
-        PreKeyBundle::new(
-            bundle.registration_id,
-            DeviceId::try_from(2u32).expect("valid device id"),
-            pre_key_opt,
-            SignedPreKeyId::from(bundle.signed_prekey_id),
-            signed_prekey_pub,
-            bundle.signed_prekey_signature.clone(),
-            KyberPreKeyId::from(kyber_id),
-            kyber_pub,
-            kyber_sig.clone(),
-            bundle.identity_key,
-        )?
-    } else {
-        return Err(SignalError::Other(
-            "Linked device did not provide Kyber pre-key; cannot establish session".into(),
-        ));
-    };
-
-    // Process the pre-key bundle to establish a Signal Protocol session
-    sigprot::process_prekey_bundle(
-        &receiver_address,
-        &mut store.session_store,
-        &mut store.identity_store,
-        &pre_key_bundle,
-        std::time::SystemTime::now(),
-        rng,
-    )
-    .await?;
-
-    // Encrypt the message using the established session
-    let ciphertext = sigprot::message_encrypt(
-        plaintext,
-        &receiver_address,
-        &mut store.session_store,
-        &mut store.identity_store,
-        std::time::SystemTime::now(),
-        rng,
-    )
-    .await?;
-
-    Ok(ciphertext)
-}
-
-/// Decode a single PEM certificate to DER bytes.
-fn pem_to_der(pem: &str) -> Vec<u8> {
-    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
-    BASE64_STANDARD
-        .decode(b64.trim())
-        .expect("Invalid base64 in embedded certificate")
-}
-
 /// Build a `reqwest` blocking client.
 ///
 /// In production mode the client pins Signal's leaf certificate. In staging
@@ -1257,42 +889,6 @@ impl RegistrationSessionResponse {
     }
 }
 
-/// Generate a random password: 20 random bytes encoded as base64.
-fn random_password(rng: &mut StdRng) -> String {
-    let mut bytes = [0u8; 20];
-    rng.fill_bytes(&mut bytes);
-    BASE64_STANDARD.encode(bytes)
-}
-
-/// Prepend Signal's DJB Curve25519 key type byte (0x05) to a 32-byte key.
-fn djb_key(key: &[u8]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(33);
-    v.push(0x05);
-    v.extend_from_slice(key);
-    v
-}
-
-/// Compute an XEdDSA signature of `message` using an X25519 `private_key`.
-#[cfg(test)]
-fn xeddsa_sign(private_key: &StaticSecret, message: &[u8], rng: &mut StdRng) -> [u8; 64] {
-    use xeddsa::{xed25519::PrivateKey as XEdKey, Sign as XEdSign};
-    let xed: XEdKey = private_key.into();
-    xed.sign(message, Rng06Compat(rng))
-}
-
-/// Parse a UUID string into its 16-byte binary representation.
-fn parse_uuid_bytes(uuid_str: &str) -> Option<Vec<u8>> {
-    let hex: String = uuid_str.replace('-', "");
-    if hex.len() != 32 {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(16);
-    for i in (0..32).step_by(2) {
-        bytes.push(u8::from_str_radix(&hex[i..i + 2], 16).ok()?);
-    }
-    Some(bytes)
-}
-
 /// Parse `tsdevice://` and `sgnl://linkdevice` URIs.
 ///
 /// Returns `(ephemeral_id, device_public_key_bytes)`.
@@ -1359,82 +955,9 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&decoded_bytes).into_owned()
 }
 
-/// Encrypt a `ProvisionMessage` for delivery to `device_pub`.
-///
-/// Algorithm (matches Signal's `ProvisioningCipher`):
-///   1. Generate ephemeral X25519 key pair.
-///   2. ECDH with `device_pub` yields a 32-byte shared secret.
-///   3. HKDF-SHA256 (no salt, info = "TextSecure Provisioning Message") yields
-///      64 bytes: first 32 are the AES-256 key, last 32 the HMAC-SHA256 key.
-///   4. Encrypt the serialised proto with AES-256-CBC and PKCS7.
-///   5. Authenticate with HMAC-SHA256 over `[VERSION || IV || CIPHERTEXT]`.
-///   6. Return `ProvisionEnvelope { public_key: ephemeral_djb, body: VERSION || IV || CT || MAC }`.
-fn encrypt_provision_message(
-    msg: &ProvisionMessage,
-    device_pub: &X25519Public,
-    rng: &mut StdRng,
-) -> Result<ProvisionEnvelope, SignalError> {
-    const VERSION: u8 = 1;
-
-    let ephemeral_secret = StaticSecret::random_from_rng(Rng06Compat(rng));
-    let ephemeral_public = X25519Public::from(&ephemeral_secret);
-
-    let shared = ephemeral_secret.diffie_hellman(device_pub);
-
-    let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
-    let mut key_material = [0u8; 64];
-    hk.expand(b"TextSecure Provisioning Message", &mut key_material)
-        .map_err(|e| SignalError::Other(format!("HKDF expand failed: {e}")))?;
-    let aes_key = &key_material[..32];
-    let mac_key = &key_material[32..];
-
-    let plaintext = msg.encode_to_vec();
-    let mut iv = [0u8; 16];
-    rng.fill_bytes(&mut iv);
-
-    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-    let cipher =
-        Aes256CbcEnc::new_from_slices(aes_key, &iv).map_err(|e| SignalError::Other(e.to_string()))?;
-    let ciphertext = cipher.encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
-
-    let mut mac = Hmac::<Sha256>::new_from_slice(mac_key)
-        .map_err(|e| SignalError::Other(e.to_string()))?;
-    mac.update(&[VERSION]);
-    mac.update(&iv);
-    mac.update(&ciphertext);
-    let mac_bytes = mac.finalize().into_bytes();
-
-    let mut body = Vec::with_capacity(1 + 16 + ciphertext.len() + 32);
-    body.push(VERSION);
-    body.extend_from_slice(&iv);
-    body.extend_from_slice(&ciphertext);
-    body.extend_from_slice(&mac_bytes);
-
-    Ok(ProvisionEnvelope {
-        public_key: Some(djb_key(ephemeral_public.as_bytes())),
-        body: Some(body),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_djb_key_prefix() {
-        let key = [0u8; 32];
-        let djb = djb_key(&key);
-        assert_eq!(djb.len(), 33);
-        assert_eq!(djb[0], 0x05);
-    }
-
-    #[test]
-    fn test_xeddsa_sign_length() {
-        let mut rng = StdRng::from_os_rng();
-        let secret = StaticSecret::random_from_rng(Rng06Compat(&mut rng));
-        let sig = xeddsa_sign(&secret, b"test message", &mut rng);
-        assert_eq!(sig.len(), 64);
-    }
 
     #[test]
     fn test_parse_tsdevice_uri() {
@@ -1452,113 +975,6 @@ mod tests {
         let (uuid, key) = parse_device_uri(&uri).unwrap();
         assert_eq!(uuid, "testid");
         assert_eq!(key, vec![5u8; 33]);
-    }
-
-    #[test]
-    fn test_encrypt_provision_message_roundtrip() {
-        let mut rng = StdRng::from_os_rng();
-        let device_secret = StaticSecret::random_from_rng(Rng06Compat(&mut rng));
-        let device_pub = X25519Public::from(&device_secret);
-
-        let msg = ProvisionMessage {
-            number: Some("+123456789".to_string()),
-            provisioning_code: Some("code123".to_string()),
-            ..Default::default()
-        };
-
-        let envelope = encrypt_provision_message(&msg, &device_pub, &mut rng).unwrap();
-        assert!(envelope.public_key.is_some());
-        let body = envelope.body.unwrap();
-        assert!(!body.is_empty());
-        assert_eq!(body[0], 1u8); // VERSION byte
-    }
-
-    #[test]
-    fn test_random_password_length() {
-        let mut rng = StdRng::from_os_rng();
-        let pw = random_password(&mut rng);
-        assert_eq!(pw.len(), 28);
-    }
-
-    #[test]
-    fn test_parse_uuid_bytes() {
-        let uuid = "550e8400-e29b-41d4-a716-446655440000";
-        let bytes = parse_uuid_bytes(uuid).unwrap();
-        assert_eq!(bytes.len(), 16);
-        assert_eq!(bytes[0], 0x55);
-        assert_eq!(bytes[1], 0x0e);
-    }
-
-    #[test]
-    fn test_parse_uuid_bytes_invalid() {
-        assert!(parse_uuid_bytes("not-a-uuid").is_none());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_libsignal_session_and_encrypt() {
-        // Verify we can establish a session and encrypt a message using libsignal-protocol
-        let mut rng = StdRng::from_os_rng();
-
-        let sender_identity = IdentityKeyPair::generate(&mut rng);
-        let receiver_identity = IdentityKeyPair::generate(&mut rng);
-        let receiver_address = ProtocolAddress::new(
-            "receiver".to_string(),
-            DeviceId::try_from(2u32).unwrap(),
-        );
-
-        let spk_pair = sigprot::KeyPair::generate(&mut rng);
-        let spk_sig = receiver_identity
-            .private_key()
-            .calculate_signature(&spk_pair.public_key.serialize(), &mut rng)
-            .unwrap();
-
-        let kyber_pair =
-            sigprot::kem::KeyPair::generate(sigprot::kem::KeyType::Kyber1024, &mut rng);
-        let kyber_sig = receiver_identity
-            .private_key()
-            .calculate_signature(&kyber_pair.public_key.serialize(), &mut rng)
-            .unwrap();
-
-        let mut store = InMemSignalProtocolStore::new(sender_identity, 1).unwrap();
-
-        let bundle = PreKeyBundle::new(
-            2,
-            DeviceId::try_from(2u32).unwrap(),
-            None,
-            SignedPreKeyId::from(1),
-            spk_pair.public_key,
-            spk_sig.to_vec(),
-            KyberPreKeyId::from(1),
-            kyber_pair.public_key,
-            kyber_sig.to_vec(),
-            *receiver_identity.identity_key(),
-        )
-        .unwrap();
-
-        sigprot::process_prekey_bundle(
-            &receiver_address,
-            &mut store.session_store,
-            &mut store.identity_store,
-            &bundle,
-            std::time::SystemTime::now(),
-            &mut rng,
-        )
-        .await
-        .unwrap();
-
-        let ct = sigprot::message_encrypt(
-            b"test sync message",
-            &receiver_address,
-            &mut store.session_store,
-            &mut store.identity_store,
-            std::time::SystemTime::now(),
-            &mut rng,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(ct.message_type(), sigprot::CiphertextMessageType::PreKey);
-        assert!(!ct.serialize().is_empty());
     }
 
     /// Smoke test: hit Signal's production server with a real HTTPS request
@@ -1586,33 +1002,6 @@ mod tests {
             }
             Err(e) => panic!("unexpected error from Signal production: {e}"),
         }
-    }
-
-    #[test]
-    fn test_persisted_account_roundtrip() {
-        let original = SignalAccount::dummy("+15555550123");
-        let (public, secrets) = original.to_persisted();
-        // Only the public half is serialized to disk; secrets travel out of
-        // band via the OS keyring (`persistence` module).
-        let json = serde_json::to_string(&public).unwrap();
-        let parsed: PersistedAccount = serde_json::from_str(&json).unwrap();
-        let restored = SignalAccount::try_from_persisted(parsed, secrets).unwrap();
-
-        assert_eq!(restored.phone, original.phone);
-        assert_eq!(restored.password, original.password);
-        assert_eq!(restored.aci, original.aci);
-        assert_eq!(restored.pni, original.pni);
-        assert_eq!(restored.registration_id, original.registration_id);
-        assert_eq!(restored.master_key, original.master_key);
-        assert_eq!(restored.profile_key, original.profile_key);
-        assert_eq!(
-            restored.aci_identity.serialize(),
-            original.aci_identity.serialize()
-        );
-        assert_eq!(
-            restored.pni_identity.serialize(),
-            original.pni_identity.serialize()
-        );
     }
 
     /// Reproduces the user-reported failure with a real toll-free-shaped

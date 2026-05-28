@@ -1,11 +1,11 @@
-// Drop-in replacement for signal_http that simulates the full registration and
-// linking flow with fake delays. Used with `--demo` to test the UI without
-// hitting Signal's servers or needing a real phone number.
+// Drop-in replacement for the `http` flows that simulates the full
+// registration and linking flow with fake delays. Used with `--demo` to test
+// the UI without hitting Signal's servers or needing a real phone number.
 //
 // The phone number `+0...` forces the captcha branch and the code `000000`
 // forces the device-transfer branch, so both flows are reachable in the demo.
 
-use crate::signal_http::{SignalAccount, SignalError, VerificationRequest};
+use crate::types::{SignalAccount, SignalError, VerificationRequest};
 use std::thread;
 use std::time::Duration;
 

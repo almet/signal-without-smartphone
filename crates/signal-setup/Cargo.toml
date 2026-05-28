@@ -1,0 +1,19 @@
+[package]
+name = "signal-setup"
+description = "Signal Desktop setup tool for users without smartphones"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "signal-setup"
+path = "src/main.rs"
+
+[dependencies]
+signal-setup-core = { path = "../signal-setup-core" }
+
+eframe = { version = "0.30", default-features = true }
+egui = "0.30"
+image = "0.25"
+rxing = "0.6"
+arboard = "3.4"

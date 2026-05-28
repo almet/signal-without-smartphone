@@ -20,7 +20,7 @@
 //! rewritten with only public fields. Legacy `account.json` (single-account)
 //! is also folded in.
 
-use crate::signal_http::{AccountSecrets, PersistedAccount, SignalAccount, SignalError};
+use crate::types::{AccountSecrets, PersistedAccount, SignalAccount, SignalError};
 use keyring_core::Entry;
 use std::path::PathBuf;
 use std::sync::Once;
