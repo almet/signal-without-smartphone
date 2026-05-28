@@ -21,12 +21,14 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-amd64
+            appimage_arch: x86_64
 
           # Linux ARM64 (native)
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-arm64
+            appimage_arch: aarch64
 
           # Windows x86_64 (native)
           - os: windows-latest
@@ -78,6 +80,24 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      # Build the AppImage from the original binary name, before the rename
+      # step below moves it to the per-arch asset name. Linux only.
+      - name: Package as AppImage
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          mkdir -p dist
+          packaging/linux/make-appimage.sh \
+            "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" \
+            "${{ matrix.appimage_arch }}" \
+            dist
+
+      - name: Upload AppImage artifact
+        if: ${{ runner.os == 'Linux' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Signal_Setup-${{ matrix.appimage_arch }}.AppImage
+          path: dist/Signal_Setup-${{ matrix.appimage_arch }}.AppImage
+
       - name: Rename binary
         if: ${{ runner.os != 'Windows' }}
         run: |
@@ -101,12 +121,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Intel — cross-compiled on Apple Silicon runner
+          # macOS Intel, cross-compiled on Apple Silicon runner
           - os: macos-latest
             target: x86_64-apple-darwin
             asset_name: signal-setup-macos-intel.dmg
 
-          # macOS Silicon — native build on ARM runner
+          # macOS Silicon, native build on ARM runner
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: signal-setup-macos-silicon.dmg

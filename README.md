@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/logo.png" alt="signal-setup logo" width="160" height="160">
+  <img src="crates/signal-setup/assets/logo.png" alt="signal-setup logo" width="160" height="160">
 </p>
 
 # Setup Signal without smartphone
 
 A Desktop application to register an account with Signal and link it with
-Signal Desktop, all without without requiring a smartphone.
+Signal Desktop, all without requiring a smartphone.
 
 ![Capture of the interface](interface.png)
 
@@ -43,12 +43,43 @@ their tracker that it is not meant for end users
 [#6431](https://github.com/signalapp/Signal-Desktop/issues/6431)).
 That is why this separate tool exists.
 
+## Install
+
+Download the file for your system from the
+[releases page](https://github.com/almet/signal-without-smartphone/releases):
+
+- **macOS**: `signal-setup-macos-silicon.dmg` (Apple Silicon) or
+  `signal-setup-macos-intel.dmg` (Intel). Open the `.dmg` and drag
+  **Signal Setup** into Applications.
+- **Linux**: `Signal_Setup-x86_64.AppImage` (or the arm64 build). Make it
+  executable (`chmod +x Signal_Setup-*.AppImage`) and run it. A plain
+  `signal-setup-linux-*` binary is also published if you prefer.
+- **Windows**: `signal-setup-windows-amd64.exe`. Double-click to run.
+
+### First launch on macOS and Windows
+
+The releases are not yet signed with a paid developer certificate, so the
+system warns you the first time:
+
+- **macOS** shows "cannot be opened because it is from an unidentified
+  developer." Right-click the app and choose **Open**, then confirm. You only
+  need to do this once. If it reports the app is "damaged," clear the download
+  quarantine flag: `xattr -dr com.apple.quarantine "/Applications/Signal Setup.app"`.
+
+- **Windows** SmartScreen shows "Windows protected your PC." Click **More
+  info**, then **Run anyway**.
+
 ## Want to build it yourself?
 
 ```bash
 cargo build --release
 ./target/release/signal-setup
 ```
+
+The project is a Cargo workspace with two crates: `signal-setup-core` (the
+Signal registration and device-linking logic) and `signal-setup` (the desktop
+GUI that depends on it). Building the workspace produces the `signal-setup`
+binary above.
 
 ## Build requirements
 
