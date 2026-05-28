@@ -180,12 +180,33 @@ jobs:
       - name: List artifacts
         run: ls -R artifacts/
 
+      - name: Extract changelog section for this tag
+        id: changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Pull the `## [<version>] - ...` section from CHANGELOG.md, stopping
+          # at the next `## ` header. Missing section is non-fatal: we just
+          # leave the file empty and fall back to auto-generated notes.
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::No CHANGELOG.md section found for version $version"
+          fi
+          echo "--- release notes ---"
+          cat release-notes.md
+          echo "--- end ---"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: artifacts/*/*
           draft: false
           prerelease: false
+          body_path: release-notes.md
+          append_body: true
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

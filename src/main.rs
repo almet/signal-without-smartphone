@@ -170,26 +170,35 @@ struct SignalSetupApp {
     /// step indicator uses it to decide whether "Captcha" is a step the user
     /// can navigate back to — otherwise it was skipped and shouldn't be.
     captcha_was_required: bool,
+    /// Cached account list. Read once on startup (and refreshed after
+    /// save/delete) so the Welcome screen, which paints every frame,
+    /// doesn't hit the OS keyring on every repaint — that would trigger
+    /// a Keychain prompt on each item until the user clicks "Always
+    /// Allow", and would block the UI thread regardless.
+    accounts: Vec<SignalAccount>,
 }
 
 impl SignalSetupApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
         let mut app = Self::default();
-
-        // If any accounts are on disk, route to the welcome chooser. The
-        // accounts themselves are re-read each time the screen renders so the
-        // list stays in sync with edits/deletes.
-        match persistence::list() {
-            Ok(accounts) if !accounts.is_empty() => {
-                app.step = Step::Welcome;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                app.status = Status::Error(format!("Could not read saved accounts: {e}"));
-            }
+        app.refresh_accounts();
+        if !app.accounts.is_empty() {
+            app.step = Step::Welcome;
         }
         app
+    }
+
+    /// Reload the cached account list from disk + keyring. Call only when
+    /// the cache can't be updated incrementally (e.g. startup); save/delete
+    /// patch `self.accounts` directly to avoid extra keyring reads.
+    fn refresh_accounts(&mut self) {
+        match persistence::list() {
+            Ok(accounts) => self.accounts = accounts,
+            Err(e) => {
+                self.status = Status::Error(format!("Could not read saved accounts: {e}"));
+            }
+        }
     }
 
     fn spawn<F>(&mut self, ctx: egui::Context, f: F)
@@ -282,10 +291,9 @@ impl eframe::App for SignalSetupApp {
                     // linking step (and later launches) can address it by
                     // `--user-data-dir`. Pre-existing default profile is
                     // adopted when free; otherwise a phone-derived name.
-                    let taken: Vec<String> = persistence::list()
-                        .ok()
-                        .into_iter()
-                        .flatten()
+                    let taken: Vec<String> = self
+                        .accounts
+                        .iter()
                         .filter_map(|a| a.desktop_profile.clone())
                         .collect();
                     account.desktop_profile = Some(
@@ -294,6 +302,8 @@ impl eframe::App for SignalSetupApp {
                     if let Err(e) = persistence::save(&account) {
                         eprintln!("Warning: could not save account to disk: {e}");
                     }
+                    self.accounts.retain(|a| a.phone != account.phone);
+                    self.accounts.push(account.clone());
                     self.signal_account = Some(account);
                     self.device_transfer_available = false;
                     self.status = Status::Success("Phone number verified.".into());
@@ -398,21 +408,12 @@ impl SignalSetupApp {
     fn ui_welcome(&mut self, ui: &mut egui::Ui) {
         step_header(ui, "Welcome back", "Saved Signal accounts");
 
-        let accounts = match persistence::list() {
-            Ok(a) => a,
-            Err(e) => {
-                ui.label(
-                    RichText::new(format!("Could not read saved accounts: {e}")).color(ERROR_RED),
-                );
-                return;
-            }
-        };
-
-        if accounts.is_empty() {
+        if self.accounts.is_empty() {
             // No accounts left → drop straight into the registration flow.
             self.step = Step::PhoneInput;
             return;
         }
+        let accounts = self.accounts.clone();
 
         ui.label(
             RichText::new("Pick an account to re-link Signal Desktop, or register a new one:")
@@ -534,6 +535,7 @@ impl SignalSetupApp {
                 if let Err(e) = persistence::delete(&phone) {
                     self.status = Status::Error(format!("Could not delete account: {e}"));
                 } else {
+                    self.accounts.retain(|a| a.phone != phone);
                     self.status = Status::Success(format!("Deleted {phone}."));
                 }
             }

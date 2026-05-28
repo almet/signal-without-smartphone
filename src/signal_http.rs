@@ -190,11 +190,12 @@ pub struct PersistedAccount {
     pub desktop_profile: Option<String>,
 }
 
-/// Sensitive fields for a `SignalAccount`. Each field is held in its own
-/// keyring entry; this struct just bundles them in memory while moving
-/// between `SignalAccount` and the keyring.
+/// Sensitive fields for a `SignalAccount`. Serialized to JSON and stored as
+/// a single keyring entry per phone (one Keychain prompt per account rather
+/// than one per field).
 ///
 /// Binary fields are base64-encoded because keyring backends store strings.
+#[derive(Serialize, Deserialize)]
 pub struct AccountSecrets {
     pub password: String,
     pub aci_identity_b64: String,

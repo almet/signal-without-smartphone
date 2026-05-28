@@ -8,13 +8,8 @@
 //!
 //! All cryptographic material (password, identity key pairs, master/profile
 //! keys) lives in the OS-native keyring under service name "signal-setup",
-//! with one entry per secret field per phone number. Usernames are
-//! `{phone}:{field}` where field is one of:
-//!   - password
-//!   - aci_identity
-//!   - pni_identity
-//!   - master_key
-//!   - profile_key
+//! with one entry per phone number whose value is a JSON blob of all
+//! secrets — one Keychain ACL prompt per account, not one per field.
 //!
 //! Set `SIGNAL_SETUP_CONFIG_DIR` to override the file location (used by
 //! tests). Tests also force the keyring backend to the in-memory sample
@@ -33,14 +28,6 @@ use std::sync::Once;
 const ACCOUNTS_FILE: &str = "accounts.json";
 const LEGACY_FILE: &str = "account.json";
 const KEYRING_SERVICE: &str = "signal-setup";
-
-const SECRET_FIELDS: &[&str] = &[
-    "password",
-    "aci_identity",
-    "pni_identity",
-    "master_key",
-    "profile_key",
-];
 
 fn config_dir() -> Option<PathBuf> {
     if let Ok(override_dir) = std::env::var("SIGNAL_SETUP_CONFIG_DIR") {
@@ -117,59 +104,36 @@ fn register_default_store() -> Result<(), SignalError> {
     }
 }
 
-fn entry_for(phone: &str, field: &str) -> Result<Entry, SignalError> {
+fn entry_for(phone: &str) -> Result<Entry, SignalError> {
     init_keyring()?;
-    Entry::new(KEYRING_SERVICE, &format!("{phone}:{field}"))
-        .map_err(|e| SignalError::Other(format!("keyring entry {phone}:{field}: {e}")))
+    Entry::new(KEYRING_SERVICE, phone)
+        .map_err(|e| SignalError::Other(format!("keyring entry {phone}: {e}")))
 }
 
 fn read_secrets(phone: &str) -> Result<AccountSecrets, SignalError> {
-    let get = |field: &str| -> Result<String, SignalError> {
-        let entry = entry_for(phone, field)?;
-        entry
-            .get_password()
-            .map_err(|e| SignalError::Other(format!("keyring read {phone}:{field}: {e}")))
-    };
-    Ok(AccountSecrets {
-        password: get("password")?,
-        aci_identity_b64: get("aci_identity")?,
-        pni_identity_b64: get("pni_identity")?,
-        master_key_b64: get("master_key")?,
-        profile_key_b64: get("profile_key")?,
-    })
+    let entry = entry_for(phone)?;
+    let blob = entry
+        .get_password()
+        .map_err(|e| SignalError::Other(format!("keyring read {phone}: {e}")))?;
+    serde_json::from_str(&blob)
+        .map_err(|e| SignalError::Other(format!("parse bundled secrets for {phone}: {e}")))
 }
 
 fn write_secrets(phone: &str, secrets: &AccountSecrets) -> Result<(), SignalError> {
-    let set = |field: &str, value: &str| -> Result<(), SignalError> {
-        let entry = entry_for(phone, field)?;
-        entry
-            .set_password(value)
-            .map_err(|e| SignalError::Other(format!("keyring write {phone}:{field}: {e}")))
-    };
-    set("password", &secrets.password)?;
-    set("aci_identity", &secrets.aci_identity_b64)?;
-    set("pni_identity", &secrets.pni_identity_b64)?;
-    set("master_key", &secrets.master_key_b64)?;
-    set("profile_key", &secrets.profile_key_b64)?;
-    Ok(())
+    let blob = serde_json::to_string(secrets)
+        .map_err(|e| SignalError::Other(format!("serialize secrets: {e}")))?;
+    let entry = entry_for(phone)?;
+    entry
+        .set_password(&blob)
+        .map_err(|e| SignalError::Other(format!("keyring write {phone}: {e}")))
 }
 
 fn delete_secrets(phone: &str) -> Result<(), SignalError> {
-    for field in SECRET_FIELDS {
-        let entry = entry_for(phone, field)?;
-        match entry.delete_credential() {
-            Ok(()) => {}
-            // Missing entries are fine — the caller may be cleaning up
-            // partial state, or this phone was never saved at all.
-            Err(keyring_core::Error::NoEntry) => {}
-            Err(e) => {
-                return Err(SignalError::Other(format!(
-                    "keyring delete {phone}:{field}: {e}"
-                )));
-            }
-        }
+    let entry = entry_for(phone)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(e) => Err(SignalError::Other(format!("keyring delete {phone}: {e}"))),
     }
-    Ok(())
 }
 
 /// Read the array of public account metadata from disk. Returns an empty Vec
@@ -570,4 +534,5 @@ mod tests {
             assert!(!body.contains("aci_identity"));
         });
     }
+
 }
