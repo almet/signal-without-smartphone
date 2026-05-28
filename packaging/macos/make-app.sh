@@ -34,7 +34,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-LOGO_PNG="${REPO_ROOT}/assets/logo.png"
+LOGO_PNG="${REPO_ROOT}/crates/signal-setup/assets/logo.png"
 INFO_PLIST_TEMPLATE="${REPO_ROOT}/packaging/macos/Info.plist"
 
 if [[ ! -f "$LOGO_PNG" ]]; then
