@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="signal-setup logo" width="160" height="160">
+</p>
+
 # Setup Signal without smartphone
 
 A Desktop application to register an account with Signal and link it with
