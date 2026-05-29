@@ -1,8 +1,9 @@
-# Setup Signal without smartphone
 
 <p align="center">
   <img src="crates/signal-setup/assets/logo.png" alt="signal-setup logo" width="160" height="160">
 </p>
+
+# Setup Signal without smartphone
 
 A Desktop application to register an account with Signal and link it with
 Signal Desktop, all without requiring a smartphone.
@@ -128,6 +129,7 @@ desktop as a secondary device.
 Here is the flow:
 
 ```mermaid
+%%{init: {'theme':'default', 'themeVariables': {'background':'#ffffff'}}}%%
 sequenceDiagram
     actor User
     participant App as App
