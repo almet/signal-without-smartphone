@@ -1,8 +1,8 @@
+# Setup Signal without smartphone
+
 <p align="center">
   <img src="crates/signal-setup/assets/logo.png" alt="signal-setup logo" width="160" height="160">
 </p>
-
-# Setup Signal without smartphone
 
 A Desktop application to register an account with Signal and link it with
 Signal Desktop, all without requiring a smartphone.
@@ -10,7 +10,7 @@ Signal Desktop, all without requiring a smartphone.
 ![Capture of the interface](interface.png)
 
 *Note that Signal still requires a phone number to be used. This utility avoids the
-need of a *smart*phone, but will still require a phone able to receive SMS
+need of a *smart*phone, but will still require a way to to receive SMS
 messages during the setup phase*
 
 Grab [the latest release!](https://github.com/almet/signal-without-smartphone/releases)
@@ -119,6 +119,75 @@ pnpm start
 
 A `--demo` flag is also available for fully offline testing with fake data (no
 server needed).
+
+## Under the hood
+
+This application registers as the primary signal device, and then links signal
+desktop as a secondary device.
+
+Here is the flow:
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant App as App
+    participant Server as Signal Server
+    participant Desktop as Signal Desktop
+    participant Store as Disk + Keyring
+
+    Note over App: Step 0: Welcome (if saved accounts)
+
+    rect rgb(235,245,255)
+    Note over User,Server: Phase 1: Request verification code
+    User->>App: Step 1: enter phone (+1234567890)
+    App->>Server: POST /v1/verification/session
+    Server-->>App: session.id (+ captcha_required?)
+    alt Captcha required
+        Note over App: Step 2 shown
+        User->>App: solve captcha, paste it
+        App->>Server: POST .../session/{id}/code (sms)
+    else No captcha
+        App->>Server: POST .../session/{id}/code (sms)
+    end
+    Server-->>User: SMS verification code
+    end
+
+    rect rgb(235,255,235)
+    Note over User,Server: Phase 2: Verify & register account
+    User->>App: Step 3: enter 6-digit code
+    App->>Server: PUT .../session/{id}/code {code}
+    Note over App: Generate keys: ACI/PNI identity,<br/>signed pre-keys, Kyber PQ keys,<br/>master/profile keys, password
+    App->>Server: POST /v1/registration (account attrs + keys)
+    alt 409 Device transfer available
+        Server-->>App: 409 / DeviceTransferAvailable
+        Note over App: warn, retry skipping device transfer
+    else Success
+        Server-->>App: registered
+        App->>Store: save metadata (disk) + secrets (keyring)
+    end
+    end
+
+    rect rgb(255,245,235)
+    Note over User,Desktop: Phase 3: Link Signal Desktop
+    User->>App: Step 4: launch Desktop, "Link to existing device"
+    Desktop-->>User: shows QR code
+    User->>App: paste QR image / link
+    App->>Server: GET /v1/devices/provisioning/code
+    Server-->>App: verification_code
+    Note over App: Build ProvisionMessage (identity keys,<br/>profile/master key, code) →<br/>ECDH + HKDF + AES-256-CBC + HMAC
+    App->>Server: PUT /v1/provisioning/{ephemeral_id} (envelope)
+    Server-->>Desktop: deliver envelope / register as device 2
+    loop Poll up to 60s
+        App->>Server: GET /v2/keys/{aci}/2
+        Server-->>App: device 2 pre-keys (when ready)
+    end
+    Note over App: send_linked_device_sync():<br/>X3DH + Double Ratchet session,<br/>encrypt empty contacts SyncMessage
+    App->>Server: PUT /v1/messages/{aci} (encrypted sync)
+    Server-->>Desktop: SyncMessage / leaves "Syncing…"
+    end
+
+    App-->>User: Step 5 : 🎉 Setup complete
+```
 
 ## License
 
