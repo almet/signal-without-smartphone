@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PINNED="signal-root.crt"
+PINNED="crates/signal-setup-core/signal-root.crt"
 OUTPUT=""
 SUMMARY=""
 
