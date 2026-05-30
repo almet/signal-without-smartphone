@@ -21,7 +21,7 @@ jobs:
         run: |
           set +e
           ./scripts/check-signal-cert.sh \
-            --pinned signal-root.crt \
+            --pinned crates/signal-setup-core/signal-root.crt \
             --summary cert-change-summary.txt
           status=$?
           set -e
@@ -39,7 +39,7 @@ jobs:
         if: steps.detect-cert-change.outputs.status == '2'
         id: meta
         run: |
-          fp=$(openssl x509 -in signal-root.crt -noout -fingerprint -sha256 | sed 's/^.*=//' | tr -d ':')
+          fp=$(openssl x509 -in crates/signal-setup-core/signal-root.crt -noout -fingerprint -sha256 | sed 's/^.*=//' | tr -d ':')
           short="${fp:0:12}"
           echo "branch=bot/signal-cert-${short}" >> "$GITHUB_OUTPUT"
           echo "short=${short}" >> "$GITHUB_OUTPUT"
@@ -52,11 +52,8 @@ jobs:
           SHORT: ${{ steps.meta.outputs.short }}
         run: |
           set -euo pipefail
-
-          # If the branch already exists on the remote, a PR is already open
-          # (or has been closed). Skip to keep the workflow idempotent.
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            echo "Branch $BRANCH already exists on origin — nothing to do."
+            echo "Branch $BRANCH already exists on origin"
             exit 0
           fi
 
@@ -64,7 +61,7 @@ jobs:
           git config user.email "cert-bump-bot@notmyidea.org"
 
           git checkout -b "$BRANCH"
-          git add signal-root.crt
+          git add crates/signal-setup-core/signal-root.crt
           git commit -m "Update signal servers certificate (${SHORT})"
           git push -u origin "$BRANCH"
 
@@ -79,7 +76,7 @@ jobs:
             echo "You can verify the new certificate before merging with this command:"
             echo
             echo '```sh'
-            echo "openssl x509 -in signal-root.crt -noout -subject -issuer -dates -fingerprint -sha256"
+            echo "openssl x509 -in crates/signal-setup-core/signal-root.crt -noout -subject -issuer -dates -fingerprint -sha256"
             echo "echo | openssl s_client -connect chat.signal.org:443 -servername chat.signal.org 2>/dev/null \\"
             echo "  | openssl x509 -noout -fingerprint -sha256"
             echo '```'
