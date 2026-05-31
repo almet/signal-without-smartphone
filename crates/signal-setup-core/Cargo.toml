@@ -1,6 +1,6 @@
 [package]
 name = "signal-setup-core"
-description = "Signal account registration and device-linking core for signal-setup"
+description = "Use Signal without a smartphone (library)"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

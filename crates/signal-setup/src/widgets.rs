@@ -1,7 +1,4 @@
-//! Stateless UI building blocks reused across the step screens: the step
-//! indicator, status banner, section header, instruction box, submit button,
-//! and small helpers for opening URLs and formatting error chains.
-
+//! Stateless widgets that can be reused in different places.
 use eframe::egui;
 use egui::RichText;
 use signal_setup_core::desktop;
@@ -10,12 +7,11 @@ use std::process::Command;
 use crate::app::Status;
 use crate::theme::*;
 
-// UI helpers
-
-/// Draw the four-step indicator (circles and connecting lines) and return the
-/// step number the user clicked, if any. Only steps strictly before `current`
-/// are clickable; future steps can't be jumped to. Step 2 (Captcha) is also
-/// unclickable when Signal never asked for one this session.
+/// Draw the step indicator (circles and connecting lines) and return the
+/// step number the user clicked, if any.
+///
+/// FIXME: remove the step names from here and pass them as parameters instead
+/// so that this function is completely reusable in other contexts.
 pub(crate) fn draw_step_indicator(
     ui: &mut egui::Ui,
     current: usize,
@@ -64,8 +60,7 @@ pub(crate) fn draw_step_indicator(
         let cy = outer_rect.top() + circle_radius;
         let center = egui::pos2(cx, cy);
 
-        // Hit-test region covers the circle and its label, so the entire
-        // visual unit is clickable rather than just the small disc.
+        // The circle and its label are clickable
         let hit_rect = egui::Rect::from_center_size(
             egui::pos2(cx, cy + 6.0),
             egui::vec2(step_width.min(80.0), height),
@@ -123,7 +118,7 @@ pub(crate) fn draw_step_indicator(
     clicked
 }
 
-/// Coloured status banner (error / success / info).
+/// Status banner. It displays different colors depending on the status passed.
 pub(crate) fn show_status(ui: &mut egui::Ui, status: &Status) {
     let (icon, text, text_color, bg, border) = match status {
         Status::None => return,
@@ -139,9 +134,8 @@ pub(crate) fn show_status(ui: &mut egui::Ui, status: &Status) {
         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            // Merge icon + text into one label so long messages wrap naturally.
             ui.label(
-                RichText::new(format!("{icon}  {text}"))
+                RichText::new(format!("{icon} {text}"))
                     .color(text_color)
                     .size(14.0),
             );
@@ -149,7 +143,7 @@ pub(crate) fn show_status(ui: &mut egui::Ui, status: &Status) {
     ui.add_space(12.0);
 }
 
-/// Section title + subtitle + separator.
+/// Heading.
 pub(crate) fn step_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.label(RichText::new(title).size(19.0).color(HEADING).strong());
     ui.add_space(2.0);
@@ -159,29 +153,26 @@ pub(crate) fn step_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(12.0);
 }
 
-/// Soft banner reporting whether Signal Desktop is available on this machine.
-/// Linking won't work without it, but we don't block the flow: the user
-/// might install it before reaching step 4.
+/// Section showing if Signal Desktop is detected on this machine.
 pub(crate) fn show_signal_desktop_status(ui: &mut egui::Ui) {
     let installed = desktop::is_installed();
     let configured = desktop::is_configured();
+
     let (msg, bg, border, fg) = match (installed, configured) {
         (true, true) => (
-            "Signal Desktop detected and configured.".to_string(),
+            "Signal Desktop is installed.".to_string(),
             SUCCESS_BG,
             SUCCESS_BORDER,
             SUCCESS_GREEN,
         ),
         (true, false) => (
-            "Signal Desktop is installed but has not been launched yet.".to_string(),
+            "Signal Desktop is installed and configured.".to_string(),
             INFO_BG,
             INFO_BORDER,
             INFO_TEXT,
         ),
         (false, _) => (
-            "Signal Desktop was not detected. If it isn't installed yet, install it now; \
-             otherwise this is just a detection miss and you can proceed."
-                .to_string(),
+            "Signal Desktop was not detected. Please install it.".to_string(),
             INFO_BG,
             INFO_BORDER,
             INFO_TEXT,
@@ -197,7 +188,7 @@ pub(crate) fn show_signal_desktop_status(ui: &mut egui::Ui) {
         });
 }
 
-/// Light inset box with bullet instructions.
+/// Box with bullet instructions.
 pub(crate) fn instruction_box(ui: &mut egui::Ui, lines: &[&str]) {
     egui::Frame::none()
         .fill(INSET_BG)
@@ -224,7 +215,7 @@ pub(crate) fn submit_row(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool 
     clicked
 }
 
-/// Open a URL in the system default browser, cross-platform.
+/// Open an URL in the default detected browser.
 pub(crate) fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
     let _ = Command::new("xdg-open").arg(url).spawn();
@@ -236,9 +227,12 @@ pub(crate) fn open_url(url: &str) {
     let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
 }
 
-/// Render an error plus the chain of underlying causes. `reqwest` errors in
-/// particular hide the actual reason (DNS, TCP, TLS) in `.source()`, so the
-/// top-level message alone is often just "error sending request".
+/// Format an error as text.
+///
+/// If a `cause()` is provided, read and inline it.
+///
+/// This has been especially useful for `reqwest` errors, that hides the details of the
+/// error otherwise.
 pub(crate) fn format_error_chain(err: &dyn std::error::Error) -> String {
     let mut out = err.to_string();
     let mut src = err.source();

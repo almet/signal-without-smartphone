@@ -1,9 +1,8 @@
-// Drop-in replacement for the `http` flows that simulates the full
-// registration and linking flow with fake delays. Used with `--demo` to test
-// the UI without hitting Signal's servers or needing a real phone number.
-//
-// The phone number `+0...` forces the captcha branch and the code `000000`
-// forces the device-transfer branch, so both flows are reachable in the demo.
+//! Drop-in replacement for the `http` flows that simulates the full
+//! registration and linking flow with fake delays. This is what runs when the cli
+//! is passed the `--demo` flag.
+//!
+//! The code `000000` forces a device transfer.
 
 use crate::types::{SignalAccount, SignalError, VerificationRequest};
 use std::thread;
@@ -59,13 +58,13 @@ pub fn verify_and_register(
     Ok(SignalAccount::dummy(phone))
 }
 
-pub fn link_device(
-    _account: &SignalAccount,
-    uri: &str,
-) -> Result<(), SignalError> {
+pub fn link_device(_account: &SignalAccount, uri: &str) -> Result<(), SignalError> {
     fake_delay();
 
-    if !["tsdevice://", "sgnl://"].iter().any(|scheme| uri.contains(scheme)) {
+    if !["tsdevice://", "sgnl://"]
+        .iter()
+        .any(|scheme| uri.contains(scheme))
+    {
         return Err(SignalError::InvalidUri(
             "Expected a tsdevice:// or sgnl:// URI".into(),
         ));

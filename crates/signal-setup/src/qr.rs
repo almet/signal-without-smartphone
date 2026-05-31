@@ -1,5 +1,8 @@
-//! Read a device-linking QR code from the clipboard image and decode it,
-//! trying several preprocessing variants so imperfect screenshots still work.
+//! Read a device-linking QR code from the clipboard image and decode it.
+//! This uses different strategies, because the QR code detection might not work
+//! depending how it was captured.
+//! (I was naively thinking that people would use their WM screenshot abilities, but
+//! turns out sometimes they like to be creative!)
 
 use arboard::Clipboard;
 use image::DynamicImage;
@@ -7,8 +10,6 @@ use rxing::{
     common::HybridBinarizer, BinaryBitmap, BufferedImageLuminanceSource, DecodeHintType,
     DecodeHintValue, MultiFormatReader, Reader,
 };
-
-// QR Code decoding helpers
 
 /// Try to decode a QR code from a grayscale image using rxing.
 fn try_decode_gray(gray: &image::GrayImage) -> Option<String> {
@@ -60,7 +61,6 @@ fn upscale(gray: &image::GrayImage, scale: u32) -> image::GrayImage {
     )
 }
 
-/// Decode a QR code, trying a series of preprocessing variants for robustness.
 fn decode_qr_from_image(img: &DynamicImage) -> Result<String, String> {
     let gray = img.to_luma8();
 

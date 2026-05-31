@@ -1,5 +1,10 @@
-//! Run mode (production, staging, demo) and the dispatch layer that routes
-//! each registration call to either the core crate or the demo backend.
+//! Because this tools is kinda hard to test, I'm using a "backend" mechanism to
+//! enable different run modes (production, staging, demo). This makes it easier to
+//! test UI changes, for instance. The different modes can be passed as flags when
+//! running the binary (--staging or --demo).
+//!
+//! I'm not particularly happy with how this is designed as of now, but at least it's
+//! working :-)
 
 use signal_setup_core as core;
 use signal_setup_core::demo;
@@ -19,9 +24,6 @@ pub(crate) static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
 pub(crate) fn mode() -> Mode {
     MODE.get().copied().unwrap_or_default()
 }
-
-// Dispatch helpers that route to the core crate or the demo backend based on
-// the mode.
 
 pub(crate) fn request_verification_code(
     phone: &str,

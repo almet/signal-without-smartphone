@@ -11,9 +11,9 @@ mod widgets;
 use app::SignalSetupApp;
 use backend::{mode, Mode, MODE};
 
-/// Decode the embedded PNG into the RGBA buffer eframe wants for the window
-/// icon. Returns an empty icon if decoding fails, so a bad icon never blocks
-/// startup.
+/// Decode the embedded PNG into the format required by eframe.
+/// Because this function is in the critical-path, log failures and return
+/// a default image in case of decoding failure.
 fn load_window_icon() -> egui::IconData {
     const PNG: &[u8] = include_bytes!("../assets/logo.png");
     match image::load_from_memory(PNG) {

@@ -3,7 +3,7 @@ name: Release Builds
 on:
   push:
     tags:
-      - 'v*'  # Trigger on version tags like v1.0.0, v0.1.2, etc.
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,21 +16,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 (native)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-amd64
             appimage_arch: x86_64
 
-          # Linux ARM64 (native)
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-arm64
             appimage_arch: aarch64
 
-          # Windows x86_64 (native)
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: signal-setup.exe
@@ -50,7 +47,8 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev protobuf-compiler
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev protobuf-compiler
 
       - name: Install Windows dependencies
         if: ${{ runner.os == 'Windows' }}
@@ -81,7 +79,6 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       # Build the AppImage from the original binary name, before the rename
-      # step below moves it to the per-arch asset name. Linux only.
       - name: Package as AppImage
         if: ${{ runner.os == 'Linux' }}
         run: |
@@ -121,12 +118,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Intel, cross-compiled on Apple Silicon runner
+          # macOS Intel, cross-compiled
           - os: macos-latest
             target: x86_64-apple-darwin
             asset_name: signal-setup-macos-intel.dmg
 
-          # macOS Silicon, native build on ARM runner
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: signal-setup-macos-silicon.dmg
@@ -204,9 +200,7 @@ jobs:
         id: changelog
         run: |
           version="${GITHUB_REF_NAME#v}"
-          # Pull the `## [<version>] - ...` section from CHANGELOG.md, stopping
-          # at the next `## ` header. Missing section is non-fatal: we just
-          # leave the file empty and fall back to auto-generated notes.
+          # Pull the first section of the CHANGELOG
           awk -v ver="$version" '
             $0 ~ "^## \\[" ver "\\]" { found=1; next }
             found && /^## / { exit }

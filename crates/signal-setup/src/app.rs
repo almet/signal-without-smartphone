@@ -1,22 +1,15 @@
-//! Application state and the eframe update loop: the step state machine, the
-//! background-work result and status types, the `SignalSetupApp` struct, and
-//! the per-frame dispatch that draws the header and the active step screen.
-
 use eframe::egui;
 use egui::RichText;
-use signal_setup_core::{desktop, persistence};
 use signal_setup_core::SignalAccount;
+use signal_setup_core::{desktop, persistence};
 use std::sync::mpsc;
 
 use crate::theme::*;
 use crate::widgets::{draw_step_indicator, show_status};
 
-// Step state machine
-
 #[derive(Default, PartialEq, Clone, Copy)]
 pub(crate) enum Step {
-    /// Shown only at startup when a previously-saved account is found on
-    /// disk. Lets the user re-link, switch numbers, or delete.
+    /// The welcome screen is only shown when a previous account was linked
     Welcome,
     #[default]
     PhoneInput,
@@ -52,8 +45,6 @@ pub(crate) enum WorkResult {
     LinkError(String),
 }
 
-// Status banner
-
 #[derive(Default, Clone)]
 pub(crate) enum Status {
     #[default]
@@ -62,8 +53,6 @@ pub(crate) enum Status {
     Success(String),
     Error(String),
 }
-
-// App state
 
 #[derive(Default)]
 pub(crate) struct SignalSetupApp {
@@ -74,23 +63,16 @@ pub(crate) struct SignalSetupApp {
     pub(crate) device_uri: String,
     pub(crate) status: Status,
     pub(crate) loading: bool,
-    /// Session ID returned by the verification session API (steps 1 to 3).
+    /// Session ID returned by the verification session API.
     pub(crate) session_id: Option<String>,
-    /// Account key material after successful registration (steps 3 to 4).
+    /// Account key material after successful registration.
     pub(crate) signal_account: Option<SignalAccount>,
     pub(crate) result_rx: Option<mpsc::Receiver<WorkResult>>,
-    /// Set to true when registration returns 409 (existing account supports
-    /// device transfer). The UI shows an explanation and a "Skip Transfer" button.
+    /// Set to true when an existing account supports device transfer.
     pub(crate) device_transfer_available: bool,
-    /// True once Signal has asked us for a captcha during this session. The
-    /// step indicator uses it to decide whether "Captcha" is a step the user
-    /// can navigate back to; otherwise it was skipped and shouldn't be.
+    /// Did we require a captcha in this session?
     pub(crate) captcha_was_required: bool,
-    /// Cached account list. Read once on startup (and refreshed after
-    /// save/delete) so the Welcome screen, which paints every frame,
-    /// doesn't hit the OS keyring on every repaint. A repaint read would
-    /// trigger a Keychain prompt on each item until the user clicks "Always
-    /// Allow", and would block the UI thread regardless.
+    /// The (cached) list of accounts. Stored here to avoid re-reading from the keychain.
     pub(crate) accounts: Vec<SignalAccount>,
 }
 
@@ -105,9 +87,7 @@ impl SignalSetupApp {
         app
     }
 
-    /// Reload the cached account list from disk + keyring. Call only when
-    /// the cache can't be updated incrementally (e.g. startup); save/delete
-    /// patch `self.accounts` directly to avoid extra keyring reads.
+    /// Reload the cached account list from keyring.
     pub(crate) fn refresh_accounts(&mut self) {
         match persistence::list() {
             Ok(accounts) => self.accounts = accounts,
@@ -137,16 +117,14 @@ impl SignalSetupApp {
         Some(result)
     }
 
-    /// Jump back to a previously-completed step. Invalidates any state owned
-    /// by later steps so the flow restarts cleanly from `target`.
+    /// Make the UI display a previous step, invalidating all previous steps.
+    /// (This is a bit brittle because it needs to be updated manually).
     pub(crate) fn jump_back_to_step(&mut self, target: usize) {
         // Drop any in-flight worker; its result would land in the wrong step.
         self.result_rx = None;
         self.loading = false;
         self.status = Status::None;
 
-        // Each step depends on state produced by earlier ones. Going back to
-        // step N must wipe everything step >N produced.
         match target {
             1 => {
                 self.captcha_token.clear();
@@ -203,18 +181,16 @@ impl eframe::App for SignalSetupApp {
                     self.status = Status::Error(format!("Registration failed: {e}"));
                 }
                 WorkResult::VerifyOk { mut account } => {
-                    // Bind a Signal Desktop profile to this account so the
-                    // linking step (and later launches) can address it by
-                    // `--user-data-dir`. Pre-existing default profile is
-                    // adopted when free; otherwise a phone-derived name.
+                    // Bind a Signal Desktop profile to this account phone number.
                     let taken: Vec<String> = self
                         .accounts
                         .iter()
                         .filter_map(|a| a.desktop_profile.clone())
                         .collect();
-                    account.desktop_profile = Some(
-                        desktop::choose_profile_for_new_account(&account.phone, &taken),
-                    );
+                    account.desktop_profile = Some(desktop::choose_profile_for_new_account(
+                        &account.phone,
+                        &taken,
+                    ));
                     if let Err(e) = persistence::save(&account) {
                         eprintln!("Warning: could not save account to disk: {e}");
                     }

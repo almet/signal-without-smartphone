@@ -1,6 +1,6 @@
 [package]
 name = "signal-setup"
-description = "Signal Desktop setup tool for users without smartphones"
+description = "Use Signal without a smartphone! "
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

@@ -1,19 +1,52 @@
-//! Detection, profile management, and launching for Signal Desktop.
+//! Each Signal account registered via this tool gets its own Signal
+//! Desktop profile (a `--user-data-dir` directory), making it so that
+//! multiple numbers can be handled on one machine.
 //!
-//! Each Signal account registered through this tool gets its own Signal
-//! Desktop profile (a `--user-data-dir` directory), so multiple numbers can
-//! coexist on one machine. The first account registered on a machine that
-//! already has a Signal Desktop install adopts the existing default
-//! profile dir and is labelled `default`; subsequent accounts get a
-//! `Signal-{sanitized-phone}` dir of their own.
+//! - The first account registered will use the default profile dir
+//! - Subsequent accounts use a `Signal-{sanitized-phone}` dir.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Profile name reserved for the pre-existing Signal Desktop install.
 pub const DEFAULT_PROFILE: &str = "default";
 
-/// Returns true if a Signal Desktop application bundle/binary is on disk.
+fn install_paths() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![PathBuf::from("/Applications/Signal.app")]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec![
+            PathBuf::from("/usr/bin/signal-desktop"),
+            PathBuf::from("/usr/local/bin/signal-desktop"),
+            PathBuf::from("/snap/bin/signal-desktop"),
+            PathBuf::from("/var/lib/flatpak/exports/bin/org.signal.Signal"),
+            dirs::home_dir()
+                .map(|h| h.join(".local/share/flatpak/exports/bin/org.signal.Signal"))
+                .unwrap_or_default(),
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut v = vec![];
+        if let Some(local) = dirs::data_local_dir() {
+            v.push(
+                local
+                    .join("Programs")
+                    .join("signal-desktop")
+                    .join("Signal.exe"),
+            );
+        }
+        v
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        vec![]
+    }
+}
+
+/// Returns true if a Signal Desktop application has been detected.
 pub fn is_installed() -> bool {
     install_paths().iter().any(|p| p.exists())
 }
@@ -26,18 +59,14 @@ pub fn is_configured() -> bool {
         .unwrap_or(false)
 }
 
-/// Pick a profile name for a brand-new account being registered.
+/// Pick a profile name for a new account being registered.
 ///
-/// If Signal Desktop's default profile dir already exists and is not
-/// already claimed (i.e. no other saved account is using it), reuse it.
-/// The user almost certainly wants their existing Desktop install to be
-/// the home for this number rather than getting a fresh empty profile.
-/// Otherwise derive a per-phone name.
+/// - Reuse the default profile dir if no other account uses it, as this is probably
+///   what most users will want;
+/// - Otherwise, derive a profile from the account number.
 pub fn choose_profile_for_new_account(phone: &str, taken: &[String]) -> String {
     let default_taken = taken.iter().any(|p| p == DEFAULT_PROFILE);
-    let default_exists = default_user_data_dir()
-        .map(|p| p.exists())
-        .unwrap_or(false);
+    let default_exists = default_user_data_dir().map(|p| p.exists()).unwrap_or(false);
     if default_exists && !default_taken {
         DEFAULT_PROFILE.to_string()
     } else {
@@ -45,9 +74,8 @@ pub fn choose_profile_for_new_account(phone: &str, taken: &[String]) -> String {
     }
 }
 
-/// Absolute path of the `--user-data-dir` to pass to Signal Desktop for the
-/// given profile name. `default` resolves to Signal Desktop's standard
-/// per-OS location; any other name maps to a sibling directory.
+/// Absolute path of the `--user-data-dir`.
+/// `default`will return the standard Signal Desktop profile directory.
 pub fn profile_path(profile: &str) -> Option<PathBuf> {
     if profile == DEFAULT_PROFILE {
         return default_user_data_dir();
@@ -55,11 +83,10 @@ pub fn profile_path(profile: &str) -> Option<PathBuf> {
     default_user_data_dir().and_then(|p| p.parent().map(|parent| parent.join(profile)))
 }
 
-/// Launch Signal Desktop pointing at the given profile's `--user-data-dir`.
+/// Launch Signal Desktop with a specific profile.
 ///
-/// Spawned detached: the GUI returns immediately, Desktop keeps running
-/// after this process exits. The directory is created if missing so
-/// Desktop's first-run flow can populate it.
+/// The process is spawned detached from this binary, and will continue running after
+/// this process exits.
 pub fn launch(profile: &str) -> Result<(), String> {
     let Some(data_dir) = profile_path(profile) else {
         return Err(
@@ -101,37 +128,6 @@ fn spawn_detached(exe: &std::path::Path, data_dir: &std::path::Path) -> std::io:
     Ok(())
 }
 
-fn install_paths() -> Vec<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        vec![PathBuf::from("/Applications/Signal.app")]
-    }
-    #[cfg(target_os = "linux")]
-    {
-        vec![
-            PathBuf::from("/usr/bin/signal-desktop"),
-            PathBuf::from("/usr/local/bin/signal-desktop"),
-            PathBuf::from("/snap/bin/signal-desktop"),
-            PathBuf::from("/var/lib/flatpak/exports/bin/org.signal.Signal"),
-            dirs::home_dir()
-                .map(|h| h.join(".local/share/flatpak/exports/bin/org.signal.Signal"))
-                .unwrap_or_default(),
-        ]
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let mut v = vec![];
-        if let Some(local) = dirs::data_local_dir() {
-            v.push(local.join("Programs").join("signal-desktop").join("Signal.exe"));
-        }
-        v
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        vec![]
-    }
-}
-
 /// Signal Desktop's standard `--user-data-dir` for this platform.
 fn default_user_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -152,11 +148,12 @@ fn default_user_data_dir() -> Option<PathBuf> {
     }
 }
 
-/// Turn a phone number like `+15551234567` into a filesystem-safe segment
-/// `15551234567`. Strips every char that isn't ASCII-alphanumeric so the
-/// result is portable across macOS/Linux/Windows path rules.
+/// Turn a phone number into a filesystem-safe segment.
 fn sanitize_phone(phone: &str) -> String {
-    phone.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    phone
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
 }
 
 #[cfg(test)]
@@ -171,8 +168,7 @@ mod tests {
 
     #[test]
     fn choose_profile_uses_phone_when_default_already_claimed() {
-        let chosen =
-            choose_profile_for_new_account("+15551234567", &["default".to_string()]);
+        let chosen = choose_profile_for_new_account("+15551234567", &["default".to_string()]);
         assert_eq!(chosen, "Signal-15551234567");
     }
 }

@@ -1,9 +1,41 @@
-//! Pure cryptographic helpers shared by the HTTP flows.
+//! Cryptographic helpers
 //!
-//! This groups the key encoding, random material generation, UUID parsing,
-//! certificate decoding, and the two encryption routines (Signal's
-//! `ProvisioningCipher` and the libsignal-protocol X3DH/Double Ratchet path)
-//! used when provisioning and syncing a linked device.
+//! The main bulk of the cryptographic work is done by the libsignal-protocol crate.
+//! This module provides utilities on top.
+//!
+//! If you want to learn more about the Signal Protocol, their documentation is the
+//! best way to get started:
+//!
+//!     https://signal.org/docs/
+//!
+//! Below are some definitions that can be useful while reading this code:
+//!
+//! **The Kyber key encapsulation mechanism**:
+//!
+//!     A (post-quantum) key encapsulation mechanism https://www.pq-crystals.org/kyber/
+//!
+//! **Elliptic Curve Cryptography** (EC, ECC)
+//!
+//!     An approach to public key cryptography using elliptic curves.
+//!     See https://en.wikipedia.org/wiki/Elliptic-curve_cryptography
+//!   
+//! **Diffie—Hellman**, (DH or DHKE)
+//!     
+//!     A method to securely generate a symmetric cryptographic key over a public
+//!     channel. If you don't know about it, go check it, it's pretty fun!
+//!     See https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange
+//!
+//! **HMAC Key Derivation Function (HKDF)**
+//!
+//!     A way to transform a short key into a long key, with more entropy.
+//!     https://en.wikipedia.org/wiki/HKDF
+//!
+//! **XEdDSA**
+//!
+//!     A signature scheme introduced by Trevor P. with the Signal Protocol, which
+//!     extends EdDSA — a previously known signature scheme — to work with public and
+//!     private key formats X25519 and X448 Diffie—Hellman functions.
+//!     https://signal.org/docs/specifications/xeddsa/
 
 use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use base64::prelude::*;
@@ -28,9 +60,15 @@ use crate::types::{SignalAccount, SignalError};
 pub(crate) struct Rng06Compat<'a>(pub(crate) &'a mut StdRng);
 
 impl rand_core_06::RngCore for Rng06Compat<'_> {
-    fn next_u32(&mut self) -> u32 { self.0.next_u32() }
-    fn next_u64(&mut self) -> u64 { self.0.next_u64() }
-    fn fill_bytes(&mut self, dest: &mut [u8]) { self.0.fill_bytes(dest) }
+    fn next_u32(&mut self) -> u32 {
+        self.0.next_u32()
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest)
+    }
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core_06::Error> {
         self.0.fill_bytes(dest);
         Ok(())
@@ -39,7 +77,7 @@ impl rand_core_06::RngCore for Rng06Compat<'_> {
 
 impl rand_core_06::CryptoRng for Rng06Compat<'_> {}
 
-/// Parsed pre-key bundle for establishing a Signal Protocol session.
+/// The parsed pre-key bundle, used to establish the Signal Protocol session.
 pub(crate) struct DevicePreKeyBundle {
     pub identity_key: IdentityKey,
     pub registration_id: u32,
@@ -53,8 +91,7 @@ pub(crate) struct DevicePreKeyBundle {
     pub one_time_prekey_bytes: Option<Vec<u8>>,
 }
 
-/// Encrypt plaintext using libsignal-protocol's proper X3DH session
-/// establishment and Double Ratchet encryption.
+/// Encrypt plaintext with X3DH session establishment and Double Ratchet encryption.
 pub(crate) async fn encrypt_with_libsignal(
     plaintext: &[u8],
     account: &SignalAccount,
@@ -66,18 +103,14 @@ pub(crate) async fn encrypt_with_libsignal(
         DeviceId::try_from(2u32).expect("valid device id"),
     );
 
-    // Create an in-memory protocol store for the sender (primary device)
-    let mut store = InMemSignalProtocolStore::new(
-        account.aci_identity,
-        account.registration_id,
-    )?;
+    // Create an in-memory "protocol store" for the sender (primary device)
+    let mut store = InMemSignalProtocolStore::new(account.aci_identity, account.registration_id)?;
 
     // Parse the signed pre-key public key from the bundle
     let signed_prekey_pub = sigprot::PublicKey::deserialize(&bundle.signed_prekey_bytes)
         .map_err(|e| SignalError::Other(format!("parse signed prekey: {e}")))?;
 
-    // Build the pre-key bundle for session establishment.
-    // We need the Kyber pre-key if available; if not, we need a fallback.
+    // Build the pre-key bundle for session establishment using a Kyber pre-key.
     let pre_key_bundle = if let (Some(kyber_id), Some(kyber_bytes), Some(kyber_sig)) = (
         bundle.kyber_prekey_id,
         bundle.kyber_prekey_bytes.as_ref(),
@@ -112,7 +145,7 @@ pub(crate) async fn encrypt_with_libsignal(
         )?
     } else {
         return Err(SignalError::Other(
-            "Linked device did not provide Kyber pre-key; cannot establish session".into(),
+            "The linked device did not provide a Kyber pre-key. Cannot initiate session".into(),
         ));
     };
 
@@ -141,7 +174,7 @@ pub(crate) async fn encrypt_with_libsignal(
     Ok(ciphertext)
 }
 
-/// Decode a single PEM certificate to DER bytes.
+/// Decode a PEM certificate to DER bytes.
 pub(crate) fn pem_to_der(pem: &str) -> Vec<u8> {
     let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
     BASE64_STANDARD
@@ -156,7 +189,7 @@ pub(crate) fn random_password(rng: &mut StdRng) -> String {
     BASE64_STANDARD.encode(bytes)
 }
 
-/// Prepend Signal's DJB Curve25519 key type byte (0x05) to a 32-byte key.
+/// Prepend Signal's Curve25519 key type byte (0x05) to a 32-byte key.
 pub(crate) fn djb_key(key: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(33);
     v.push(0x05);
@@ -188,13 +221,15 @@ pub(crate) fn parse_uuid_bytes(uuid_str: &str) -> Option<Vec<u8>> {
 /// Encrypt a `ProvisionMessage` for delivery to `device_pub`.
 ///
 /// Algorithm (matches Signal's `ProvisioningCipher`):
-///   1. Generate ephemeral X25519 key pair.
-///   2. ECDH with `device_pub` yields a 32-byte shared secret.
-///   3. HKDF-SHA256 (no salt, info = "TextSecure Provisioning Message") yields
-///      64 bytes: first 32 are the AES-256 key, last 32 the HMAC-SHA256 key.
+///
+///   1. Generate an ephemeral X25519 key pair.
+///   2. Do a Diffie—Hellman with the key pair (`device_pub`) and return a shared secret
+///   3. Derive it with HKDF-SHA256, return an AES-256 key and a HMAC-SHA256 key.
 ///   4. Encrypt the serialised proto with AES-256-CBC and PKCS7.
-///   5. Authenticate with HMAC-SHA256 over `[VERSION || IV || CIPHERTEXT]`.
-///   6. Return `ProvisionEnvelope { public_key: ephemeral_djb, body: VERSION || IV || CT || MAC }`.
+///   5. Authenticate with HMAC-SHA256.
+///
+/// Then, return `ProvisionEnvelope`
+///
 pub(crate) fn encrypt_provision_message(
     msg: &ProvisionMessage,
     device_pub: &X25519Public,
@@ -219,12 +254,12 @@ pub(crate) fn encrypt_provision_message(
     rng.fill_bytes(&mut iv);
 
     type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-    let cipher =
-        Aes256CbcEnc::new_from_slices(aes_key, &iv).map_err(|e| SignalError::Other(e.to_string()))?;
+    let cipher = Aes256CbcEnc::new_from_slices(aes_key, &iv)
+        .map_err(|e| SignalError::Other(e.to_string()))?;
     let ciphertext = cipher.encrypt_padded_vec_mut::<Pkcs7>(&plaintext);
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(mac_key)
-        .map_err(|e| SignalError::Other(e.to_string()))?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(mac_key).map_err(|e| SignalError::Other(e.to_string()))?;
     mac.update(&[VERSION]);
     mac.update(&iv);
     mac.update(&ciphertext);
@@ -311,10 +346,8 @@ mod tests {
 
         let sender_identity = IdentityKeyPair::generate(&mut rng);
         let receiver_identity = IdentityKeyPair::generate(&mut rng);
-        let receiver_address = ProtocolAddress::new(
-            "receiver".to_string(),
-            DeviceId::try_from(2u32).unwrap(),
-        );
+        let receiver_address =
+            ProtocolAddress::new("receiver".to_string(), DeviceId::try_from(2u32).unwrap());
 
         let spk_pair = sigprot::KeyPair::generate(&mut rng);
         let spk_sig = receiver_identity

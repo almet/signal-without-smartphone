@@ -46,21 +46,16 @@ That is why this separate tool exists.
 
 ## Install
 
-Download the file for your system from the
-[releases page](https://github.com/almet/signal-without-smartphone/releases):
+Download the file for your system from the [releases page](https://github.com/almet/signal-without-smartphone/releases):
 
-- **macOS**: `signal-setup-macos-silicon.dmg` (Apple Silicon) or
-  `signal-setup-macos-intel.dmg` (Intel). Open the `.dmg` and drag
-  **Signal Setup** into Applications.
-- **Linux**: `Signal_Setup-x86_64.AppImage` (or the arm64 build). Make it
-  executable (`chmod +x Signal_Setup-*.AppImage`) and run it. A plain
-  `signal-setup-linux-*` binary is also published if you prefer.
-- **Windows**: `signal-setup-windows-amd64.exe`. Double-click to run.
+- **macOS**: Open the `.dmg` and drag **Signal Setup** into Applications.
+- **Linux**: `AppImage`: Make it executable (`chmod +x Signal_Setup-*.AppImage`) and run it. A plain `signal-setup-linux-*` binary is also published if you prefer.
+- **Windows**: Double-click to run.
 
 ### First launch on macOS and Windows
 
-The releases are not yet signed with a paid developer certificate, so the
-system warns you the first time:
+The releases are not signed with a paid developer certificate ($99 USD per year for
+macOS, even more for Winwows), and as a result the system warns you after install:
 
 - **macOS** shows "cannot be opened because it is from an unidentified
   developer." Right-click the app and choose **Open**, then confirm. You only
@@ -117,14 +112,16 @@ cd Signal-Desktop
 pnpm install
 pnpm start
 ```
-
 A `--demo` flag is also available for fully offline testing with fake data (no
 server needed).
 
 ## Under the hood
 
-This application registers as the primary signal device, and then links signal
-desktop as a secondary device.
+There are other tools able to do this, such as the awesome [signal-cli](https://github.com/AsamK/signal-cli) by AsamK, but unfortunately they don't provide a graphical user interface. A previous version of this tool was using it under the hood, but needed users to have a JVM installed in order to run things.
+
+Instead — and because I thought it would be easier — I used the occasion to take a deep dive into Signal's crypto.
+
+Here is a high level of how things work (this application registers as the primary signal device, and then links Signal Desktop as a secondary device).
 
 Here is the flow:
 

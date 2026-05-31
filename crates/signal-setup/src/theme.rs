@@ -1,8 +1,4 @@
-//! Color palette and the egui visual style shared across the whole UI.
-
 use eframe::egui;
-
-// Color palette
 
 pub(crate) const SIGNAL_BLUE: egui::Color32 = egui::Color32::from_rgb(59, 130, 246);
 pub(crate) const SUCCESS_GREEN: egui::Color32 = egui::Color32::from_rgb(22, 163, 74);
@@ -29,7 +25,7 @@ pub(crate) fn setup_style(ctx: &egui::Context) {
     visuals.window_fill = CARD_BG;
     visuals.extreme_bg_color = egui::Color32::WHITE; // text input backgrounds
 
-    // Consistent rounding everywhere
+    // Consistent rounding everywhere, so 2025.
     let r = egui::Rounding::same(8.0);
     visuals.window_rounding = r;
     visuals.menu_rounding = r;
@@ -39,7 +35,7 @@ pub(crate) fn setup_style(ctx: &egui::Context) {
     visuals.widgets.active.rounding = r;
     visuals.widgets.open.rounding = r;
 
-    // Widget fill / border colours
+    // Widget fill / border colors
     visuals.widgets.noninteractive.bg_fill = egui::Color32::WHITE;
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
     visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
