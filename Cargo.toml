@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/signal-setup-core", "crates/signal-setup"]
 
 [workspace.package]
-version = "3.1.2"
+version = "3.2.0"
 authors = ["almet"]
 edition = "2021"
 
