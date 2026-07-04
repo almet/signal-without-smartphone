@@ -4,38 +4,36 @@
 //! This module provides utilities on top.
 //!
 //! If you want to learn more about the Signal Protocol, their documentation is the
-//! best way to get started:
-//!
-//!     https://signal.org/docs/
+//! best way to get started: <https://signal.org/docs/>
 //!
 //! Below are some definitions that can be useful while reading this code:
 //!
 //! **The Kyber key encapsulation mechanism**:
 //!
-//!     A (post-quantum) key encapsulation mechanism https://www.pq-crystals.org/kyber/
+//! A (post-quantum) key encapsulation mechanism <https://www.pq-crystals.org/kyber/>
 //!
 //! **Elliptic Curve Cryptography** (EC, ECC)
 //!
-//!     An approach to public key cryptography using elliptic curves.
-//!     See https://en.wikipedia.org/wiki/Elliptic-curve_cryptography
-//!   
+//! An approach to public key cryptography using elliptic curves.
+//! See <https://en.wikipedia.org/wiki/Elliptic-curve_cryptography>
+//!
 //! **Diffie—Hellman**, (DH or DHKE)
-//!     
-//!     A method to securely generate a symmetric cryptographic key over a public
-//!     channel. If you don't know about it, go check it, it's pretty fun!
-//!     See https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange
+//!
+//! A method to securely generate a symmetric cryptographic key over a public
+//! channel. If you don't know about it, go check it, it's pretty fun!
+//! See <https://en.wikipedia.org/wiki/Diffie%E2%80%93Hellman_key_exchange>
 //!
 //! **HMAC Key Derivation Function (HKDF)**
 //!
-//!     A way to transform a short key into a long key, with more entropy.
-//!     https://en.wikipedia.org/wiki/HKDF
+//! A way to transform a short key into a long key, with more entropy.
+//! <https://en.wikipedia.org/wiki/HKDF>
 //!
 //! **XEdDSA**
 //!
-//!     A signature scheme introduced by Trevor P. with the Signal Protocol, which
-//!     extends EdDSA — a previously known signature scheme — to work with public and
-//!     private key formats X25519 and X448 Diffie—Hellman functions.
-//!     https://signal.org/docs/specifications/xeddsa/
+//! A signature scheme introduced by Trevor P. with the Signal Protocol, which
+//! extends EdDSA — a previously known signature scheme — to work with public and
+//! private key formats X25519 and X448 Diffie—Hellman functions.
+//! <https://signal.org/docs/specifications/xeddsa/>
 
 use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
 use base64::prelude::*;
@@ -76,6 +74,42 @@ impl rand_core_06::RngCore for Rng06Compat<'_> {
 }
 
 impl rand_core_06::CryptoRng for Rng06Compat<'_> {}
+
+/// Encrypt a profile field (name, about, emoji) the way Signal's ProfileCipher
+/// does: the plaintext is zero padded up to the nearest allowed length, then
+/// encrypted with AES-256-GCM using the profile key, and the result is
+/// prepended with the random 12 byte nonce.
+pub(crate) fn encrypt_profile_field(
+    profile_key: &[u8; 32],
+    plaintext: &[u8],
+    padded_lengths: &[usize],
+    rng: &mut StdRng,
+) -> Result<Vec<u8>, SignalError> {
+    use aes_gcm::aead::AeadInPlace;
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+
+    let padded_len = padded_lengths
+        .iter()
+        .copied()
+        .find(|len| *len >= plaintext.len())
+        .ok_or_else(|| SignalError::Other("Profile field is too long".into()))?;
+
+    let mut buf = plaintext.to_vec();
+    buf.resize(padded_len, 0);
+
+    let mut nonce = [0u8; 12];
+    rng.fill_bytes(&mut nonce);
+
+    let cipher = Aes256Gcm::new(profile_key.into());
+    cipher
+        .encrypt_in_place(Nonce::from_slice(&nonce), b"", &mut buf)
+        .map_err(|_| SignalError::Other("Profile field encryption failed".into()))?;
+
+    let mut out = Vec::with_capacity(nonce.len() + buf.len());
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&buf);
+    Ok(out)
+}
 
 /// The parsed pre-key bundle, used to establish the Signal Protocol session.
 pub(crate) struct DevicePreKeyBundle {
@@ -149,9 +183,17 @@ pub(crate) async fn encrypt_with_libsignal(
         ));
     };
 
+    // The primary device's own address (device id 1), required by libsignal
+    // v0.94+ which threads the local address through session establishment.
+    let local_address = ProtocolAddress::new(
+        account.aci.clone().unwrap_or_default(),
+        DeviceId::try_from(1u32).expect("valid device id"),
+    );
+
     // Process the pre-key bundle to establish a Signal Protocol session
     sigprot::process_prekey_bundle(
         &receiver_address,
+        &local_address,
         &mut store.session_store,
         &mut store.identity_store,
         &pre_key_bundle,
@@ -164,6 +206,7 @@ pub(crate) async fn encrypt_with_libsignal(
     let ciphertext = sigprot::message_encrypt(
         plaintext,
         &receiver_address,
+        &local_address,
         &mut store.session_store,
         &mut store.identity_store,
         std::time::SystemTime::now(),
@@ -319,6 +362,42 @@ mod tests {
     }
 
     #[test]
+    fn test_encrypt_profile_field_roundtrip() {
+        use aes_gcm::aead::AeadInPlace;
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+
+        let mut rng = StdRng::from_os_rng();
+        let mut key = [0u8; 32];
+        rng.fill_bytes(&mut key);
+
+        let ciphertext = encrypt_profile_field(&key, b"Alice", &[53, 257], &mut rng).unwrap();
+        // 12 byte nonce, 53 bytes of padded plaintext, 16 byte GCM tag.
+        assert_eq!(ciphertext.len(), 12 + 53 + 16);
+
+        let cipher = Aes256Gcm::new((&key).into());
+        let mut buf = ciphertext[12..].to_vec();
+        cipher
+            .decrypt_in_place(Nonce::from_slice(&ciphertext[..12]), b"", &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..5], b"Alice");
+        // The padding must be zero bytes so decryption can strip it.
+        assert!(buf[5..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn test_encrypt_profile_field_picks_next_bracket() {
+        let mut rng = StdRng::from_os_rng();
+        let key = [7u8; 32];
+        let long_name = [b'a'; 60];
+
+        let ciphertext = encrypt_profile_field(&key, &long_name, &[53, 257], &mut rng).unwrap();
+        assert_eq!(ciphertext.len(), 12 + 257 + 16);
+
+        let too_long = [b'a'; 300];
+        assert!(encrypt_profile_field(&key, &too_long, &[53, 257], &mut rng).is_err());
+    }
+
+    #[test]
     fn test_random_password_length() {
         let mut rng = StdRng::from_os_rng();
         let pw = random_password(&mut rng);
@@ -348,6 +427,8 @@ mod tests {
         let receiver_identity = IdentityKeyPair::generate(&mut rng);
         let receiver_address =
             ProtocolAddress::new("receiver".to_string(), DeviceId::try_from(2u32).unwrap());
+        let local_address =
+            ProtocolAddress::new("sender".to_string(), DeviceId::try_from(1u32).unwrap());
 
         let spk_pair = sigprot::KeyPair::generate(&mut rng);
         let spk_sig = receiver_identity
@@ -380,6 +461,7 @@ mod tests {
 
         sigprot::process_prekey_bundle(
             &receiver_address,
+            &local_address,
             &mut store.session_store,
             &mut store.identity_store,
             &bundle,
@@ -392,6 +474,7 @@ mod tests {
         let ct = sigprot::message_encrypt(
             b"test sync message",
             &receiver_address,
+            &local_address,
             &mut store.session_store,
             &mut store.identity_store,
             std::time::SystemTime::now(),

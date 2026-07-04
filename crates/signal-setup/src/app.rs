@@ -72,6 +72,9 @@ pub(crate) struct SignalSetupApp {
     pub(crate) device_transfer_available: bool,
     /// Did we require a captcha in this session?
     pub(crate) captcha_was_required: bool,
+    /// Whether other Signal users can find this account by its phone number.
+    /// Off by default: new accounts are registered as not discoverable.
+    pub(crate) discoverable_by_phone_number: bool,
     /// The (cached) list of accounts. Stored here to avoid re-reading from the keychain.
     pub(crate) accounts: Vec<SignalAccount>,
 }

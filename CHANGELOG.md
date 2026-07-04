@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Ship a Linux AppImage to ease installation.
+-
 
+## [3.2.0] - 2026-07-05
+
+- Publish an empty profile right after registration. This is useful for
+  Signal to issue profile key credentials, making it possible to create groups
+  and accept invitations. Otherwise creating a group reports "user could not be
+  found" and accepting an invitation silently does nothing). Fixes #11.
+- Disable discoverability of the phone number by default, but make it possible to
+  opt-in.
+
+## [3.1.2] - 2026-05-29
+
+- Ship a Linux AppImage to ease installation.
+- 
 ## [3.1.1] - 2026-05-28
+
 
 - Bundle all per-account secrets into a single OS-keyring entry per phone.
   Cuts macOS Keychain prompts from one per secret field to one per
@@ -101,7 +115,9 @@ Same set of changes as 3.0.1, released from a parallel branch.
   Signal account and link Signal Desktop without a smartphone.
 - GitHub Actions workflow publishing binaries on release.
 
-[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/almet/signal-without-smartphone/compare/v3.1.2...v3.2.0
+[3.1.2]: https://github.com/almet/signal-without-smartphone/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/almet/signal-without-smartphone/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/almet/signal-without-smartphone/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/almet/signal-without-smartphone/compare/v3.0.1...v3.0.2

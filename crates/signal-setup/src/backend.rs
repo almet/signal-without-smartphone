@@ -50,10 +50,23 @@ pub(crate) fn verify_and_register(
     session_id: &str,
     code: &str,
     skip_device_transfer: bool,
+    discoverable_by_phone_number: bool,
 ) -> Result<SignalAccount, SignalError> {
     match mode() {
-        Mode::Demo => demo::verify_and_register(phone, session_id, code, skip_device_transfer),
-        _ => core::verify_and_register(phone, session_id, code, skip_device_transfer),
+        Mode::Demo => demo::verify_and_register(
+            phone,
+            session_id,
+            code,
+            skip_device_transfer,
+            discoverable_by_phone_number,
+        ),
+        _ => core::verify_and_register(
+            phone,
+            session_id,
+            code,
+            skip_device_transfer,
+            discoverable_by_phone_number,
+        ),
     }
 }
 

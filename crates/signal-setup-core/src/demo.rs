@@ -44,6 +44,7 @@ pub fn verify_and_register(
     _session_id: &str,
     code: &str,
     skip_device_transfer: bool,
+    _discoverable_by_phone_number: bool,
 ) -> Result<SignalAccount, SignalError> {
     fake_delay();
 

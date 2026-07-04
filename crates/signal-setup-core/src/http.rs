@@ -1,21 +1,20 @@
-//! Signal HTTP API client: a pure-Rust replacement for signal-cli.
-//!
-//! This module talks directly to Signal's service endpoints over HTTPS,
-//! eliminating the need for a Java runtime or the signal-cli binary.
+//! This module talks to Signal's service endpoints over HTTPS.
+//! This is thought as a replacement for using signal-cli, ditching the
+//! Java runtime dependency.
 //!
 //! Registration flow:
-//!   1. `request_verification_code` sends an SMS/voice code via Signal's API.
+//!   1. `request_verification_code` sends an SMS code via Signal's API.
 //!   2. `verify_and_register` verifies the code and registers the account,
-//!      generating all required cryptographic keys.
+//!      generating cryptographic keys.
 //!
-//! Device-linking flow (after registration):
+//! Device-linking flows:
 //!   3. `link_device` parses a `tsdevice://` (or `sgnl://linkdevice`) URI from
 //!      Signal Desktop's QR code and provisions Desktop as a linked device via
 //!      Signal's provisioning API, then sends the initial sync messages using
 //!      libsignal-protocol.
 
 use base64::prelude::*;
-use libsignal_protocol::{self as sigprot, IdentityKey, IdentityKeyPair};
+use libsignal_protocol::{self as sigprot, Aci, IdentityKey, IdentityKeyPair};
 use prost::Message as ProstMessage;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -26,8 +25,8 @@ use std::collections::HashMap;
 use x25519_dalek::PublicKey as X25519Public;
 
 use crate::crypto::{
-    encrypt_provision_message, encrypt_with_libsignal, parse_uuid_bytes, pem_to_der,
-    random_password, DevicePreKeyBundle,
+    encrypt_profile_field, encrypt_provision_message, encrypt_with_libsignal, parse_uuid_bytes,
+    pem_to_der, random_password, DevicePreKeyBundle,
 };
 use crate::proto::{
     ContentProto, ProvisionMessage, SyncBlockedProto, SyncContactsProto, SyncMsgProto,
@@ -148,10 +147,15 @@ fn finalize_session_request(
     })
 }
 
-/// Verify the user-supplied `code` and register the account with Signal.
+/// Verify the user-supplied `code` and register the account.
 ///
-/// Generates fresh identity keys, signed pre-keys, and Kyber last-resort keys;
-/// submits them all to Signal's `/v1/registration` endpoint.
+/// Generates fresh identity keys, signed pre-keys, and Kyber last-resort keys.
+/// Submits them all to Signal's `/v1/registration` endpoint. Also publishes an
+/// empty versioned profile, which the server requires before it will issue the
+/// profile key credentials that group operations rely on.
+///
+/// `discoverable_by_phone_number` controls whether other Signal users can find
+/// this account by searching for its phone number.
 ///
 /// On success returns a `SignalAccount` that must be kept alive for the device-
 /// linking step.
@@ -160,6 +164,7 @@ pub fn verify_and_register(
     session_id: &str,
     code: &str,
     skip_device_transfer: bool,
+    discoverable_by_phone_number: bool,
 ) -> Result<SignalAccount, SignalError> {
     let client = build_client();
     let mut rng = StdRng::from_os_rng();
@@ -175,7 +180,8 @@ pub fn verify_and_register(
 
     let resp = client
         .put(format!(
-            "{}/v1/verification/session/{session_id}/code", signal_api()
+            "{}/v1/verification/session/{session_id}/code",
+            signal_api()
         ))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
@@ -187,13 +193,18 @@ pub fn verify_and_register(
     let verified: SubmitCodeResponse = if resp.status().as_u16() == 409 {
         let body: serde_json::Value = resp.json().unwrap_or_default();
         SubmitCodeResponse {
-            verified: body.get("verified").and_then(|v| v.as_bool()).unwrap_or(false),
+            verified: body
+                .get("verified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         }
     } else {
         parse_response(resp)?
     };
     if !verified.verified {
-        return Err(SignalError::Other("Verification code was not accepted.".into()));
+        return Err(SignalError::Other(
+            "Verification code was not accepted.".into(),
+        ));
     }
 
     let password = random_password(&mut rng);
@@ -296,23 +307,22 @@ pub fn verify_and_register(
             registration_id,
             pni_registration_id,
             fetches_messages: true,
+            // Mirrors what signal-cli sends for a primary device.
             capabilities: Capabilities {
                 storage: true,
                 versioned_expiration_timer: true,
-                attachment_backfill: true,
+                attachment_backfill: false,
                 spqr: true,
             },
             unidentified_access_key: BASE64_STANDARD.encode(unidentified_access_key),
             unrestricted_unidentified_access: false,
-            discoverable_by_phone_number: true,
+            discoverable_by_phone_number,
             name: String::new(),
         },
         skip_device_transfer,
         every_signed_key_valid: true,
-        aci_identity_key: BASE64_STANDARD
-            .encode(aci_identity.identity_key().serialize()),
-        pni_identity_key: BASE64_STANDARD
-            .encode(pni_identity.identity_key().serialize()),
+        aci_identity_key: BASE64_STANDARD.encode(aci_identity.identity_key().serialize()),
+        pni_identity_key: BASE64_STANDARD.encode(pni_identity.identity_key().serialize()),
         aci_signed_pre_key: SignedPreKeyJson {
             key_id: 1,
             public_key: BASE64_STANDARD.encode(aci_spk_pair.public_key.serialize()),
@@ -358,6 +368,12 @@ pub fn verify_and_register(
 
     let reg: RegistrationResponse = parse_response(resp)?;
 
+    // Publish an empty versioned profile. This is useful for group operations
+    // (like creating groups and accepting invitations).
+    if let Some(aci) = reg.aci.as_deref() {
+        upload_versioned_profile(&client, aci, &password, &profile_key, &mut rng)?;
+    }
+
     Ok(SignalAccount {
         phone: phone.to_string(),
         password,
@@ -370,6 +386,74 @@ pub fn verify_and_register(
         registration_id,
         desktop_profile: None,
     })
+}
+
+fn upload_versioned_profile(
+    client: &Client,
+    aci_str: &str,
+    password: &str,
+    profile_key: &[u8],
+    rng: &mut StdRng,
+) -> Result<(), SignalError> {
+    let aci = Aci::parse_from_service_id_string(aci_str)
+        .ok_or_else(|| SignalError::Other(format!("Invalid ACI UUID: {aci_str}")))?;
+
+    let key_bytes: [u8; 32] = profile_key
+        .try_into()
+        .map_err(|_| SignalError::Other("Profile key must be 32 bytes".into()))?;
+    let key = zkgroup::profiles::ProfileKey::create(key_bytes);
+    let commitment = key.get_commitment(aci);
+    let version = key.get_profile_key_version(aci);
+
+    // Padded plaintext lengths, matching Signal's ProfileCipher brackets.
+    const NAME_LENGTHS: &[usize] = &[53, 257];
+    const ABOUT_LENGTHS: &[usize] = &[128, 254, 512];
+    const EMOJI_LENGTHS: &[usize] = &[32];
+
+    let name = encrypt_profile_field(&key_bytes, b"", NAME_LENGTHS, rng)?;
+    let about = encrypt_profile_field(&key_bytes, b"", ABOUT_LENGTHS, rng)?;
+    let about_emoji = encrypt_profile_field(&key_bytes, b"", EMOJI_LENGTHS, rng)?;
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProfileWrite {
+        /// Hex encoded profile key version, derived from the key and the ACI.
+        version: String,
+        name: String,
+        about: String,
+        about_emoji: String,
+        avatar: bool,
+        same_avatar: bool,
+        commitment: String,
+    }
+
+    let body = ProfileWrite {
+        version: version.as_ref().to_string(),
+        name: BASE64_STANDARD.encode(&name),
+        about: BASE64_STANDARD.encode(&about),
+        about_emoji: BASE64_STANDARD.encode(&about_emoji),
+        avatar: false,
+        same_avatar: false,
+        commitment: BASE64_STANDARD.encode(zkgroup::serialize(&commitment)),
+    };
+
+    let resp = client
+        .put(format!("{}/v1/profile", signal_api()))
+        .header("Content-Type", "application/json")
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci_str, Some(password))
+        .json(&body)
+        .send()?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(SignalError::Api {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(())
 }
 
 /// Link Signal Desktop as a secondary device using a `tsdevice://` or
@@ -454,9 +538,7 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
 
     let envelope_bytes = envelope.encode_to_vec();
     let resp = client
-        .put(format!(
-            "{}/v1/provisioning/{ephemeral_id}", signal_api()
-        ))
+        .put(format!("{}/v1/provisioning/{ephemeral_id}", signal_api()))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
         .basic_auth(aci, Some(&account.password))
@@ -534,16 +616,14 @@ fn fetch_device_prekeys(
         if resp.status().is_success() {
             let kr: KeyResponse = resp.json()?;
             if let Some(dev) = kr.devices.into_iter().next() {
-                let identity_key_bytes =
-                    BASE64_STANDARD.decode(&kr.identity_key).map_err(|e| {
-                        SignalError::Other(format!("bad identity key: {e}"))
-                    })?;
+                let identity_key_bytes = BASE64_STANDARD
+                    .decode(&kr.identity_key)
+                    .map_err(|e| SignalError::Other(format!("bad identity key: {e}")))?;
                 let identity_key = IdentityKey::decode(&identity_key_bytes)
                     .map_err(|e| SignalError::Other(format!("decode identity key: {e}")))?;
-                let signed_prekey_bytes =
-                    BASE64_STANDARD
-                        .decode(&dev.signed_pre_key.public_key)
-                        .map_err(|e| SignalError::Other(format!("bad spk: {e}")))?;
+                let signed_prekey_bytes = BASE64_STANDARD
+                    .decode(&dev.signed_pre_key.public_key)
+                    .map_err(|e| SignalError::Other(format!("bad spk: {e}")))?;
                 let signed_prekey_signature = dev
                     .signed_pre_key
                     .signature
@@ -554,21 +634,21 @@ fn fetch_device_prekeys(
                     .unwrap_or_default();
                 let (one_time_prekey_id, one_time_prekey_bytes) = match dev.pre_key {
                     Some(pk) => {
-                        let raw = BASE64_STANDARD.decode(&pk.public_key).map_err(|e| {
-                            SignalError::Other(format!("bad opk: {e}"))
-                        })?;
+                        let raw = BASE64_STANDARD
+                            .decode(&pk.public_key)
+                            .map_err(|e| SignalError::Other(format!("bad opk: {e}")))?;
                         (Some(pk.key_id), Some(raw))
                     }
                     None => (None, None),
                 };
                 let (kyber_id, kyber_bytes, kyber_sig) = match dev.pq_pre_key {
                     Some(pq) => {
-                        let key_bytes = BASE64_STANDARD.decode(&pq.public_key).map_err(|e| {
-                            SignalError::Other(format!("bad pq key: {e}"))
-                        })?;
-                        let sig_bytes = BASE64_STANDARD.decode(&pq.signature).map_err(|e| {
-                            SignalError::Other(format!("bad pq sig: {e}"))
-                        })?;
+                        let key_bytes = BASE64_STANDARD
+                            .decode(&pq.public_key)
+                            .map_err(|e| SignalError::Other(format!("bad pq key: {e}")))?;
+                        let sig_bytes = BASE64_STANDARD
+                            .decode(&pq.signature)
+                            .map_err(|e| SignalError::Other(format!("bad pq sig: {e}")))?;
                         (Some(pq.key_id), Some(key_bytes), Some(sig_bytes))
                     }
                     None => (None, None, None),
@@ -633,9 +713,8 @@ fn send_linked_device_sync(
         .build()
         .map_err(|e| SignalError::Other(format!("tokio runtime: {e}")))?;
 
-    let wire = rt.block_on(async {
-        encrypt_with_libsignal(&plaintext, account, &bundle, rng).await
-    })?;
+    let wire =
+        rt.block_on(async { encrypt_with_libsignal(&plaintext, account, &bundle, rng).await })?;
 
     // Send via Signal's message endpoint (device 1 to device 2, same account).
     #[derive(Serialize)]
@@ -726,19 +805,15 @@ fn build_staging_tls_config() -> rustls::ClientConfig {
         .add(CertificateDer::from(ca_der))
         .expect("Failed to add Signal root CA");
 
-    rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .expect("Failed to set TLS protocol versions")
-    .with_root_certificates(root_store)
-    .with_no_client_auth()
+    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("Failed to set TLS protocol versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth()
 }
 
 fn build_production_tls_config() -> rustls::ClientConfig {
-    use rustls::client::danger::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-    };
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
     use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
     use std::sync::Arc;
@@ -801,14 +876,12 @@ fn build_production_tls_config() -> rustls::ClientConfig {
 
     let pinned_der = pem_to_der(include_str!("../signal-root.crt"));
 
-    rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .expect("Failed to set TLS protocol versions")
-    .dangerous()
-    .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned_der }))
-    .with_no_client_auth()
+    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("Failed to set TLS protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned_der }))
+        .with_no_client_auth()
 }
 
 /// Send a PATCH to update the verification session (e.g. submit a captcha).
@@ -836,7 +909,8 @@ fn patch_session_with_captcha(
 
     let resp = client
         .patch(format!(
-            "{}/v1/verification/session/{session_id}", signal_api()
+            "{}/v1/verification/session/{session_id}",
+            signal_api()
         ))
         .header("Content-Type", "application/json")
         .header("X-Signal-Agent", "OWD")
@@ -1029,4 +1103,157 @@ mod tests {
             Err(e) => panic!("unexpected error from Signal production: {e}"),
         }
     }
+}
+
+/// The result of setting a username on an account.
+#[derive(Debug, Clone)]
+pub struct UsernameConfirmation {
+    /// The confirmed username, e.g. `username.1234`.
+    pub username: String,
+    /// Server handle for the username link (used to build a `sgnl.link` URL).
+    pub username_link_handle: Option<String>,
+    /// The 32-byte entropy the link ciphertext was derived from; needed to
+    /// reconstruct the shareable username link.
+    pub username_link_entropy: [u8; 32],
+}
+
+/// Reserve and confirm a Signal `nickname.discriminator` username for an
+/// already-registered account.
+pub fn set_username(
+    account: &SignalAccount,
+    username: &str,
+) -> Result<UsernameConfirmation, SignalError> {
+    use usernames::{create_for_username, Username};
+
+    let aci = account
+        .aci
+        .as_deref()
+        .ok_or_else(|| SignalError::Other("Account has no ACI; cannot set a username".into()))?;
+
+    let parsed = Username::new(username).map_err(|e| {
+        SignalError::Other(format!(
+            "Invalid username '{username}' (expected nickname.discriminator, e.g. name.1234): {e:?}"
+        ))
+    })?;
+
+    let client = build_client();
+    let hash = parsed.hash();
+    let hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash);
+
+    // 1. Reserve the hash. The server holds it for 5 minutes.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReserveBody {
+        username_hashes: Vec<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReserveResponse {
+        username_hash: String,
+    }
+
+    let resp = client
+        .put(format!(
+            "{}/v1/accounts/username_hash/reserve",
+            signal_api()
+        ))
+        .header("Content-Type", "application/json")
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .json(&ReserveBody {
+            username_hashes: vec![hash_b64.clone()],
+        })
+        .send()?;
+    let reserved: ReserveResponse = parse_response(resp)?;
+
+    // 2. Confirm it with the zk-proof and an encrypted username link.
+    let mut rng = StdRng::from_os_rng();
+    let mut randomness = [0u8; 32];
+    rng.fill_bytes(&mut randomness);
+    let proof = parsed
+        .proof(&randomness)
+        .map_err(|e| SignalError::Other(format!("username proof: {e:?}")))?;
+    let (entropy, encrypted_username) =
+        create_for_username(&mut rng, username.to_string(), None)
+            .map_err(|e| SignalError::Other(format!("username link: {e:?}")))?;
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ConfirmBody {
+        username_hash: String,
+        zk_proof: String,
+        encrypted_username: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ConfirmResponse {
+        #[serde(default)]
+        username_link_handle: Option<String>,
+    }
+
+    let resp = client
+        .put(format!(
+            "{}/v1/accounts/username_hash/confirm",
+            signal_api()
+        ))
+        .header("Content-Type", "application/json")
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .json(&ConfirmBody {
+            username_hash: reserved.username_hash,
+            zk_proof: BASE64_URL_SAFE_NO_PAD.encode(&proof),
+            encrypted_username: BASE64_URL_SAFE_NO_PAD.encode(&encrypted_username),
+        })
+        .send()?;
+    let confirmed: ConfirmResponse = parse_response(resp)?;
+
+    Ok(UsernameConfirmation {
+        username: username.to_string(),
+        username_link_handle: confirmed.username_link_handle,
+        username_link_entropy: entropy,
+    })
+}
+
+/// A TURN/STUN relay server for calls, as returned by Signal's calling relay
+/// endpoint.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnServer {
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub urls_with_ips: Vec<String>,
+}
+
+/// Fetch the account's 1:1 calling relay (TURN/STUN) servers from Signal.
+///
+/// Without these, ICE cannot traverse NAT and calls never connect (they stay
+/// "ringing" forever). Authenticated with the account's ACI + password.
+pub fn fetch_turn_servers(account: &SignalAccount) -> Result<Vec<TurnServer>, SignalError> {
+    let aci = account
+        .aci
+        .as_deref()
+        .ok_or_else(|| SignalError::Other("Account has no ACI; cannot fetch relays".into()))?;
+
+    let client = build_client();
+    let resp = client
+        .get(format!("{}/v2/calling/relays", signal_api()))
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .send()?;
+
+    #[derive(Deserialize)]
+    struct RelaysResponse {
+        #[serde(default)]
+        relays: Vec<TurnServer>,
+    }
+
+    let parsed: RelaysResponse = parse_response(resp)?;
+    Ok(parsed.relays)
 }

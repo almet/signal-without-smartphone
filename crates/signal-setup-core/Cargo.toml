@@ -6,7 +6,8 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+# default-features = false keeps reqwest's `default-tls` (native-tls) out of the build.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -19,6 +20,7 @@ hkdf = "0.12"
 sha2 = "0.10"
 hmac = "0.12"
 aes = "0.8"
+aes-gcm = "0.10"
 cbc = { version = "0.1", features = ["alloc"] }
 thiserror = "2"
 dirs = "5"
@@ -28,10 +30,18 @@ dirs = "5"
 keyring-core = "1"
 
 libsignal-protocol.workspace = true
+# zkgroup provides the profile key commitment needed to publish a versioned
+# profile, which GV2 group operations depend on.
+zkgroup.workspace = true
+# usernames provides the hash, zk-proof and link-encryption primitives to
+# reserve and confirm a Signal username.
+usernames.workspace = true
 tokio = { version = "1", features = ["rt", "macros"] }
 
 [dev-dependencies]
-xeddsa = "1.0"
+# Pinned: xeddsa 1.1 moved to rand 0.10 traits, incompatible with our rand 0.9
+# plus Rng06Compat setup.
+xeddsa = "=1.0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }

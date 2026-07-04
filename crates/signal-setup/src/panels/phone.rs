@@ -23,6 +23,16 @@ impl SignalSetupApp {
             .show(ui)
             .response;
 
+        ui.add_space(12.0);
+
+        // Signal's phone number discovery is opt-in
+        ui.checkbox(
+            &mut self.discoverable_by_phone_number,
+            RichText::new("Allow others to find this account by phone number")
+                .color(MUTED)
+                .size(13.0),
+        );
+
         ui.add_space(18.0);
 
         let ready = !self.phone.is_empty();
@@ -31,8 +41,9 @@ impl SignalSetupApp {
         if clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && ready)
         {
             let phone = self.phone.clone();
-            self.spawn(ctx.clone(), move || {
-                match backend::request_verification_code(&phone, None) {
+            self.spawn(
+                ctx.clone(),
+                move || match backend::request_verification_code(&phone, None) {
                     Ok(core::VerificationRequest::CodeSent { session_id }) => {
                         WorkResult::RegisterOk { session_id }
                     }
@@ -40,8 +51,8 @@ impl SignalSetupApp {
                         WorkResult::RegisterNeedsCaptcha { session_id }
                     }
                     Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
-                }
-            });
+                },
+            );
         }
     }
 }

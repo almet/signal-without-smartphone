@@ -65,9 +65,16 @@ impl SignalSetupApp {
                         let phone = self.phone.clone();
                         let session_id = self.session_id.clone().unwrap_or_default();
                         let code = self.verification_code.clone();
+                        let discoverable = self.discoverable_by_phone_number;
                         self.device_transfer_available = false;
                         self.spawn(ctx.clone(), move || {
-                            match backend::verify_and_register(&phone, &session_id, &code, true) {
+                            match backend::verify_and_register(
+                                &phone,
+                                &session_id,
+                                &code,
+                                true,
+                                discoverable,
+                            ) {
                                 Ok(account) => WorkResult::VerifyOk { account },
                                 Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
                             }
@@ -104,9 +111,11 @@ impl SignalSetupApp {
             let phone = self.phone.clone();
             let session_id = self.session_id.clone().unwrap_or_default();
             let code = self.verification_code.clone();
+            let discoverable = self.discoverable_by_phone_number;
             self.device_transfer_available = false;
             self.spawn(ctx.clone(), move || {
-                match backend::verify_and_register(&phone, &session_id, &code, false) {
+                match backend::verify_and_register(&phone, &session_id, &code, false, discoverable)
+                {
                     Ok(account) => WorkResult::VerifyOk { account },
                     Err(core::SignalError::DeviceTransferAvailable) => {
                         WorkResult::DeviceTransferAvailable

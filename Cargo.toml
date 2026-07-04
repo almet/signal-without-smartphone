@@ -11,7 +11,11 @@ edition = "2021"
 # and encrypted sync messages after device linking. Shared so both crates
 # pin the same tag.
 [workspace.dependencies]
-libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.87.4" }
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", tag = "v0.94.4" }
+zkgroup = { git = "https://github.com/signalapp/libsignal", tag = "v0.94.4" }
+# Signal username hashing / zk-proof / link encryption, used to set a username
+# so the account need not be found by phone number.
+usernames = { git = "https://github.com/signalapp/libsignal", tag = "v0.94.4" }
 
 [patch.crates-io]
 curve25519-dalek = { git = 'https://github.com/signalapp/curve25519-dalek', tag = 'signal-curve25519-4.1.3' }
