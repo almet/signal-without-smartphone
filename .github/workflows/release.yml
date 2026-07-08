@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual runs build the same assets from any branch and publish them as a
+  # `preview-<branch>` prerelease, so users can try unreleased changes.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -165,7 +168,11 @@ jobs:
 
       - name: Package as .app + .dmg
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-$(git rev-parse --short HEAD)"
+          fi
           mkdir -p dist
           packaging/macos/make-app.sh \
             "target/${{ matrix.target }}/release/signal-setup" \
@@ -180,6 +187,7 @@ jobs:
 
   create-release:
     name: Create Release
+    if: github.event_name == 'push'
     needs: [build, build-macos]
     runs-on: ubuntu-latest
     permissions:
@@ -224,3 +232,41 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-preview:
+    name: Publish Preview Release
+    if: github.event_name == 'workflow_dispatch'
+    needs: [build, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+
+      - name: Publish prerelease for this branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="preview-$(echo "$GITHUB_REF_NAME" | tr '/' '-')"
+
+          # Each branch gets a single moving prerelease: drop the previous
+          # one (and its tag) so the release always matches the latest run.
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+
+          {
+            echo "Automated preview build of branch \`$GITHUB_REF_NAME\` at commit $GITHUB_SHA."
+            echo ""
+            echo "These assets exist so unreleased changes can be tried out; expect rough edges."
+            echo "For daily use, grab the [latest stable release](https://github.com/$GITHUB_REPOSITORY/releases/latest) instead."
+          } > notes.md
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Preview build: $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            artifacts/*/*
