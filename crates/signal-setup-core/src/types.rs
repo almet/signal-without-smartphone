@@ -34,6 +34,14 @@ pub struct SignalAccount {
     /// account. `None` for accounts saved by older builds; assigned at
     /// registration time for new ones. See `crate::desktop`.
     pub desktop_profile: Option<String>,
+    pub last_seen_refreshed_at: Option<u64>,
+}
+
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Non-sensitive metadata for a saved account, serialized to disk.
@@ -49,6 +57,8 @@ pub struct PersistedAccount {
     pub registration_id: u32,
     #[serde(default)]
     pub desktop_profile: Option<String>,
+    #[serde(default)]
+    pub last_seen_refreshed_at: Option<u64>,
 }
 
 /// Sensitive fields for a `SignalAccount`. Serialized to JSON and stored as
@@ -74,6 +84,7 @@ impl SignalAccount {
             pni: self.pni.clone(),
             registration_id: self.registration_id,
             desktop_profile: self.desktop_profile.clone(),
+            last_seen_refreshed_at: self.last_seen_refreshed_at,
         };
         let secrets = AccountSecrets {
             password: self.password.clone(),
@@ -87,10 +98,7 @@ impl SignalAccount {
 
     /// Inverse of `to_persisted`. Fails if any base64 field is malformed or
     /// the identity key bytes aren't a valid `IdentityKeyPair`.
-    pub fn try_from_persisted(
-        p: PersistedAccount,
-        s: AccountSecrets,
-    ) -> Result<Self, SignalError> {
+    pub fn try_from_persisted(p: PersistedAccount, s: AccountSecrets) -> Result<Self, SignalError> {
         let decode = |s: &str, what: &str| {
             BASE64_STANDARD
                 .decode(s)
@@ -113,6 +121,7 @@ impl SignalAccount {
             profile_key: decode(&s.profile_key_b64, "profile_key")?,
             registration_id: p.registration_id,
             desktop_profile: p.desktop_profile,
+            last_seen_refreshed_at: p.last_seen_refreshed_at,
         })
     }
 
@@ -136,6 +145,7 @@ impl SignalAccount {
             profile_key,
             registration_id: 12345,
             desktop_profile: None,
+            last_seen_refreshed_at: Some(now_unix()),
         }
     }
 }
@@ -189,6 +199,10 @@ mod tests {
         assert_eq!(restored.aci, original.aci);
         assert_eq!(restored.pni, original.pni);
         assert_eq!(restored.registration_id, original.registration_id);
+        assert_eq!(
+            restored.last_seen_refreshed_at,
+            original.last_seen_refreshed_at
+        );
         assert_eq!(restored.master_key, original.master_key);
         assert_eq!(restored.profile_key, original.profile_key);
         assert_eq!(

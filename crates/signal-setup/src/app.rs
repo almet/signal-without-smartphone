@@ -43,6 +43,8 @@ pub(crate) enum WorkResult {
     DeviceTransferAvailable,
     LinkOk,
     LinkError(String),
+    RefreshLastSeenOk { account: SignalAccount },
+    RefreshLastSeenError(String),
 }
 
 #[derive(Default, Clone)]
@@ -217,6 +219,22 @@ impl eframe::App for SignalSetupApp {
                 }
                 WorkResult::LinkError(e) => {
                     self.status = Status::Error(format!("Linking failed: {e}"));
+                }
+                WorkResult::RefreshLastSeenOk { account } => {
+                    if let Err(e) = persistence::update_metadata(&account) {
+                        eprintln!("Warning: could not save last-seen refresh time: {e}");
+                    }
+                    if let Some(slot) = self.accounts.iter_mut().find(|a| a.phone == account.phone)
+                    {
+                        *slot = account.clone();
+                    }
+                    self.status = Status::Success(format!(
+                        "Signal now sees {} as active again.",
+                        account.phone
+                    ));
+                }
+                WorkResult::RefreshLastSeenError(e) => {
+                    self.status = Status::Error(format!("Could not refresh account activity: {e}"));
                 }
             }
         }

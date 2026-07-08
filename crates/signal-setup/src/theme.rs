@@ -5,6 +5,7 @@ pub(crate) const SUCCESS_GREEN: egui::Color32 = egui::Color32::from_rgb(22, 163,
 pub(crate) const SUCCESS_BG: egui::Color32 = egui::Color32::from_rgb(240, 253, 244);
 pub(crate) const SUCCESS_BORDER: egui::Color32 = egui::Color32::from_rgb(187, 247, 208);
 pub(crate) const ERROR_RED: egui::Color32 = egui::Color32::from_rgb(220, 38, 38);
+pub(crate) const WARNING_AMBER: egui::Color32 = egui::Color32::from_rgb(180, 83, 9);
 pub(crate) const ERROR_BG: egui::Color32 = egui::Color32::from_rgb(254, 242, 242);
 pub(crate) const ERROR_BORDER: egui::Color32 = egui::Color32::from_rgb(254, 202, 202);
 pub(crate) const INFO_TEXT: egui::Color32 = egui::Color32::from_rgb(29, 78, 216);

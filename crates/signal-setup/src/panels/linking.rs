@@ -10,7 +10,9 @@ use crate::app::{SignalSetupApp, Status, WorkResult};
 use crate::backend;
 use crate::qr::paste_and_decode_qr;
 use crate::theme::*;
-use crate::widgets::{format_error_chain, instruction_box, show_signal_desktop_status, submit_row, step_header};
+use crate::widgets::{
+    format_error_chain, instruction_box, show_signal_desktop_status, step_header, submit_row,
+};
 
 impl SignalSetupApp {
     pub(crate) fn ui_linking(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

@@ -385,6 +385,7 @@ pub fn verify_and_register(
         profile_key,
         registration_id,
         desktop_profile: None,
+        last_seen_refreshed_at: Some(crate::types::now_unix()),
     })
 }
 
@@ -1128,7 +1129,7 @@ pub fn set_username(
     let aci = account
         .aci
         .as_deref()
-        .ok_or_else(|| SignalError::Other("Account has no ACI; cannot set a username".into()))?;
+        .ok_or_else(|| SignalError::Other("Account has no ACI. Cannot set username".into()))?;
 
     let parsed = Username::new(username).map_err(|e| {
         SignalError::Other(format!(
@@ -1239,7 +1240,7 @@ pub fn fetch_turn_servers(account: &SignalAccount) -> Result<Vec<TurnServer>, Si
     let aci = account
         .aci
         .as_deref()
-        .ok_or_else(|| SignalError::Other("Account has no ACI; cannot fetch relays".into()))?;
+        .ok_or_else(|| SignalError::Other("Account has no ACI. Cannot fetch relays".into()))?;
 
     let client = build_client();
     let resp = client
@@ -1256,4 +1257,22 @@ pub fn fetch_turn_servers(account: &SignalAccount) -> Result<Vec<TurnServer>, Si
 
     let parsed: RelaysResponse = parse_response(resp)?;
     Ok(parsed.relays)
+}
+
+pub fn refresh_last_seen(account: &mut SignalAccount) -> Result<(), SignalError> {
+    let aci = account
+        .aci
+        .as_deref()
+        .ok_or_else(|| SignalError::Other("Account has no ACI. Cannot refresh last-seen".into()))?;
+
+    let client = build_client();
+    let resp = client
+        .get(format!("{}/v1/accounts/whoami", signal_api()))
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .send()?;
+
+    let _: serde_json::Value = parse_response(resp)?;
+    account.last_seen_refreshed_at = Some(crate::types::now_unix());
+    Ok(())
 }

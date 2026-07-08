@@ -76,3 +76,10 @@ pub(crate) fn link_device(account: &SignalAccount, uri: &str) -> Result<(), Sign
         _ => core::link_device(account, uri),
     }
 }
+
+pub(crate) fn refresh_last_seen(account: &mut SignalAccount) -> Result<(), SignalError> {
+    match mode() {
+        Mode::Demo => demo::refresh_last_seen(account),
+        _ => core::refresh_last_seen(account),
+    }
+}
