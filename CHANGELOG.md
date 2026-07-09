@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.3.0]- 2026-07-09
 
-- Add the ability to refresh accounts to avoid being disconnected on linked accounts. The refreshing is done by pinging the server's "whoami" endpoint. See #12. 
+- Add the ability to refresh accounts to avoid being disconnected on linked
+  accounts. The refreshing is done by pinging the server's "whoami" endpoint.
+  See #12. 
 
 ## [3.2.0] - 2026-07-05
 
