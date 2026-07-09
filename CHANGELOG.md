@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
--
+
+## [3.3.0]- 2026-07-09
+
+- Add the ability to refresh accounts to avoid being disconnected on linked accounts. The refreshing is done by pinging the server's "whoami" endpoint. See #12. 
 
 ## [3.2.0] - 2026-07-05
 
@@ -115,7 +118,9 @@ Same set of changes as 3.0.1, released from a parallel branch.
   Signal account and link Signal Desktop without a smartphone.
 - GitHub Actions workflow publishing binaries on release.
 
-[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.3.0...HEAD
+
+[3.3.0]: https://github.com/almet/signal-without-smartphone/compare/v3.3.0...v3.2.0
 [3.2.0]: https://github.com/almet/signal-without-smartphone/compare/v3.1.2...v3.2.0
 [3.1.2]: https://github.com/almet/signal-without-smartphone/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/almet/signal-without-smartphone/compare/v3.1.0...v3.1.1
