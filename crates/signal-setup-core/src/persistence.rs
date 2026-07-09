@@ -196,6 +196,7 @@ impl LegacyAccount {
                 pni: self.pni,
                 registration_id: self.registration_id,
                 desktop_profile: None,
+                last_seen_refreshed_at: None,
             },
             AccountSecrets {
                 password: self.password,
@@ -222,9 +223,8 @@ fn migrate_legacy_account_json() -> Result<(), SignalError> {
             )))
         }
     };
-    let legacy_account: LegacyAccount = serde_json::from_slice(&bytes).map_err(|e| {
-        SignalError::Other(format!("parse legacy {}: {e}", legacy.display()))
-    })?;
+    let legacy_account: LegacyAccount = serde_json::from_slice(&bytes)
+        .map_err(|e| SignalError::Other(format!("parse legacy {}: {e}", legacy.display())))?;
     let (public, secrets) = legacy_account.split();
 
     let mut existing = read_accounts_raw()?;
@@ -303,6 +303,14 @@ pub fn save(account: &SignalAccount) -> Result<(), SignalError> {
     let (public, secrets) = account.to_persisted();
     write_secrets(&public.phone, &secrets)?;
 
+    let mut all = read_all()?;
+    all.retain(|a| a.phone != public.phone);
+    all.push(public);
+    write_all(&all)
+}
+
+pub fn update_metadata(account: &SignalAccount) -> Result<(), SignalError> {
+    let (public, _) = account.to_persisted();
     let mut all = read_all()?;
     all.retain(|a| a.phone != public.phone);
     all.push(public);
@@ -407,6 +415,22 @@ mod tests {
             save(&updated).unwrap();
             let listed = list().unwrap();
             assert_eq!(listed.len(), 1, "same phone must not duplicate");
+        });
+    }
+
+    #[test]
+    fn update_metadata_persists_last_seen_refreshed_at() {
+        with_tempdir(|| {
+            let mut a = SignalAccount::dummy("+15555550123");
+            a.last_seen_refreshed_at = Some(1_000);
+            save(&a).unwrap();
+
+            a.last_seen_refreshed_at = Some(2_000);
+            update_metadata(&a).unwrap();
+
+            let listed = list().unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].last_seen_refreshed_at, Some(2_000));
         });
     }
 
@@ -526,5 +550,4 @@ mod tests {
             assert!(!body.contains("aci_identity"));
         });
     }
-
 }

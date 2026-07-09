@@ -59,6 +59,12 @@ pub fn verify_and_register(
     Ok(SignalAccount::dummy(phone))
 }
 
+pub fn refresh_last_seen(account: &mut SignalAccount) -> Result<(), SignalError> {
+    fake_delay();
+    account.last_seen_refreshed_at = Some(crate::types::now_unix());
+    Ok(())
+}
+
 pub fn link_device(_account: &SignalAccount, uri: &str) -> Result<(), SignalError> {
     fake_delay();
 
