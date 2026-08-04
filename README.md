@@ -34,15 +34,16 @@ Some people don't have a smartphone, and they should be able to use Signal :-)
 
 ## Why a separate tool?
 
-Signal has no intention of supporting this use case in their own software.
-Standalone registration code does exist in Signal Desktop, but it is gated to
-development and staging builds only, and the maintainers have confirmed on
-their tracker that it is not meant for end users
-([#1118](https://github.com/signalapp/Signal-Desktop/issues/1118),
-[#551](https://github.com/signalapp/Signal-Desktop/issues/551),
-[#575](https://github.com/signalapp/Signal-Desktop/issues/575),
-[#6431](https://github.com/signalapp/Signal-Desktop/issues/6431)).
-That is why this separate tool exists.
+As of now, Signal Desktop requires a phone number and a smartphone to set up an
+account. This [might change in the
+future](https://m.youtube.com/watch?v=C9equPLhKxY&t=19s) but until then, you can use this.
+
+> "I assume your question is in regards to sort of like phone number signup
+> that exists on Signal today. That is something we are looking at hopefully
+> for later on this year adding a way to sign up without phone numbers. [...]"
+>
+> — Ehren Kret, Signal CTO, Jul 20 2026
+
 
 ## Install
 
