@@ -11,7 +11,7 @@ Signal Desktop, all without requiring a smartphone.
 ![Capture of the interface](interface.png)
 
 *Note that Signal still requires a phone number to be used. This utility avoids the
-need of a *smart*phone, but will still require a way to to receive SMS
+need of a *smart*phone, but will still require a way to receive SMS
 messages during the setup phase*
 
 Grab [the latest release!](https://github.com/almet/signal-without-smartphone/releases)
@@ -28,7 +28,7 @@ The security of your signal conversations is as low as the security of the devic
 > 
 > — [Signal group safety, Freedom of the Press Foundation](https://freedom.press/digisec/blog/signal-group-safety/)
 
-### You might just don't have a smartphone
+### You might just not have a smartphone
 
 Some people don't have a smartphone, and they should be able to use Signal :-)
 
@@ -56,7 +56,7 @@ Download the file for your system from the [releases page](https://github.com/al
 ### First launch on macOS and Windows
 
 The releases are not signed with a paid developer certificate ($99 USD per year for
-macOS, even more for Winwows), and as a result the system warns you after install:
+macOS, even more for Windows), and as a result the system warns you after install:
 
 - **macOS** shows "cannot be opened because it is from an unidentified
   developer." Right-click the app and choose **Open**, then confirm. You only
