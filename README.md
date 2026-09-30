@@ -10,9 +10,11 @@ Signal Desktop, all without requiring a smartphone.
 
 ![Capture of the interface](interface.png)
 
-*Note that Signal still requires a phone number to be used. This utility avoids the
-need of a *smart*phone, but will still require a way to to receive SMS
-messages during the setup phase*
+*This utility avoids the need of a *smart*phone, but will still require a way to receive SMS
+messages during the setup phase.* Signal recently introduced [numberless
+accounts](https://support.signal.org/hc/en-us/articles/11197884108826-Phone-Numberless-Registration-for-Android),
+but that still requires Android and Google Play services. Chances are
+high that they will offer alternative payment options in the future.
 
 Grab [the latest release!](https://github.com/almet/signal-without-smartphone/releases)
 
