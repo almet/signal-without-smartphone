@@ -19,13 +19,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Use the oldest supported Ubuntu LTS to ship glibc-compatible binaries.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-amd64
             appimage_arch: x86_64
 
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: signal-setup
             asset_name: signal-setup-linux-arm64
@@ -76,7 +77,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.os }}-cargo-build-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}

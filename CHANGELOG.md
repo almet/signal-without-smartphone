@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Build Linux AppImage binaries with glibc 2.35 so they also run on distributions shipping an older glibc.
 
 ## [3.3.0]- 2026-07-09
 
