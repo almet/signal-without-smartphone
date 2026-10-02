@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [3.4.0]- 2026-10-02
+
 - Build Linux AppImage binaries with glibc 2.35 so they also run on distributions shipping an older glibc.
 
 ## [3.3.0]- 2026-07-09
@@ -123,6 +126,7 @@ Same set of changes as 3.0.1, released from a parallel branch.
 
 [Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.3.0...HEAD
 
+[3.4.0]: https://github.com/almet/signal-without-smartphone/compare/v3.4.0...v3.3.0
 [3.3.0]: https://github.com/almet/signal-without-smartphone/compare/v3.3.0...v3.2.0
 [3.2.0]: https://github.com/almet/signal-without-smartphone/compare/v3.1.2...v3.2.0
 [3.1.2]: https://github.com/almet/signal-without-smartphone/compare/v3.1.1...v3.1.2
