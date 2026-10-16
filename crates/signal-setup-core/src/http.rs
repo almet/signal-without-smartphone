@@ -94,7 +94,7 @@ pub fn request_verification_code(
         })
         .send()?;
 
-    let session: RegistrationSessionResponse = parse_response(resp)?;
+    let session: RegistrationSessionResponse = parse_session("create session", resp)?;
 
     let session = if let Some(token) = captcha {
         patch_session_with_captcha(&client, &session.id, token)?
@@ -156,8 +156,8 @@ fn finalize_session_request(
     // number a moment ago and the session body says when the next one may
     // be sent. The session itself stays valid, so the caller can verify the
     // earlier code instead of failing.
-    if resp.status().as_u16() == 429 {
-        let body = resp.text().unwrap_or_default();
+    let (status, body) = read_response("request code", resp)?;
+    if status == 429 {
         let throttled: Option<RegistrationSessionResponse> = serde_json::from_str(&body).ok();
         return match throttled.and_then(|s| s.next_sms.filter(|n| *n > 0)) {
             Some(next_sms_secs) => Ok(VerificationRequest::CodeAlreadySent {
@@ -170,13 +170,35 @@ fn finalize_session_request(
         };
     }
 
-    let _ = parse_response::<RegistrationSessionResponse>(resp)?;
+    let _ = parse_body::<RegistrationSessionResponse>(status, body)?;
     Ok(VerificationRequest::CodeSent {
         session_id: session.id,
     })
 }
 
-/// Seconds to wait as announced in a verification session body, if any.
+fn parse_session(
+    label: &str,
+    resp: reqwest::blocking::Response,
+) -> Result<RegistrationSessionResponse, SignalError> {
+    let (status, body) = read_response(label, resp)?;
+    parse_body(status, body)
+}
+
+fn parse_body<T: for<'de> Deserialize<'de>>(status: u16, body: String) -> Result<T, SignalError> {
+    if !(200..300).contains(&status) {
+        if status == 402 {
+            return Err(SignalError::CaptchaRequired);
+        }
+        if status == 429 {
+            return Err(SignalError::RateLimited {
+                retry_after_secs: retry_after_from_body(&body),
+            });
+        }
+        return Err(SignalError::Api { status, body });
+    }
+    serde_json::from_str(&body).map_err(|e| SignalError::Other(format!("invalid JSON: {e}")))
+}
+
 fn retry_after_from_body(body: &str) -> Option<u64> {
     let session: RegistrationSessionResponse = serde_json::from_str(body).ok()?;
     session
@@ -1136,12 +1158,9 @@ fn patch_session_with_captcha(
         })
         .send()?;
 
-    // 403 means Signal did not accept this captcha token. Tokens are single
-    // use, so this happens when a token is submitted twice. The body is the
-    // session: when it no longer asks for a captcha, an earlier token was
-    // accepted and the session can simply be used as it is.
-    if resp.status().as_u16() == 403 {
-        let body = resp.text().unwrap_or_default();
+    // 403 means Signal did not accept this captcha token.
+    let (status, body) = read_response("submit captcha", resp)?;
+    if status == 403 {
         if let Ok(session) = serde_json::from_str::<RegistrationSessionResponse>(&body) {
             if !session.captcha_required() {
                 return Ok(session);
@@ -1154,7 +1173,24 @@ fn patch_session_with_captcha(
         ));
     }
 
-    parse_response(resp)
+    parse_body(status, body)
+}
+
+/// Diagnostic trace of Signal's answers, enabled with `SIGNAL_SETUP_DEBUG`.
+fn trace_response(label: &str, status: u16, body: &str) {
+    if std::env::var_os("SIGNAL_SETUP_DEBUG").is_some() {
+        eprintln!("[signal] {label}: HTTP {status} {body}");
+    }
+}
+
+fn read_response(
+    label: &str,
+    resp: reqwest::blocking::Response,
+) -> Result<(u16, String), SignalError> {
+    let status = resp.status().as_u16();
+    let body = resp.text()?;
+    trace_response(label, status, &body);
+    Ok((status, body))
 }
 
 /// Deserialise a response body or return a `SignalError::Api`.
@@ -1164,6 +1200,7 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().unwrap_or_default();
+        trace_response("response", status.as_u16(), &body);
         if status.as_u16() == 402 {
             return Err(SignalError::CaptchaRequired);
         }

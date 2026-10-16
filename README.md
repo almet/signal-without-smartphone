@@ -143,6 +143,11 @@ cd Signal-Desktop
 pnpm install
 pnpm start
 ```
+
+Set `SIGNAL_SETUP_DEBUG=1` to print every answer of Signal's verification API
+(status and body) to the terminal, which is the first thing to look at when a
+registration does not go through.
+
 A `--demo` flag is also available for fully offline testing with fake data (no
 server needed). In demo mode, the verification code `000000` simulates an
 account eligible for device transfer and `111111` a registration-locked
