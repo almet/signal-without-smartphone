@@ -1,17 +1,17 @@
 //! Welcome screen: shown at startup when saved accounts exist. Lets the user
 //! launch Signal Desktop for a saved account, link another Desktop to it,
-//! open its management screen, import an account from a key file, or start
-//! registering a new number.
+//! open its management screen, forget it, import an account from a key
+//! file, or start registering a new number.
 
 use eframe::egui;
 use egui::RichText;
 use signal_setup_core::SignalAccount;
-use signal_setup_core::{desktop, types};
+use signal_setup_core::{desktop, persistence, types};
 
 use crate::app::{SignalSetupApp, Status, Step, WorkResult};
 use crate::backend;
 use crate::theme::*;
-use crate::widgets::{primary_button, secondary_button, step_header};
+use crate::widgets::{primary_button, secondary_button, step_header, text_button};
 
 const STALE_AFTER_DAYS: u64 = 14;
 
@@ -43,6 +43,7 @@ impl SignalSetupApp {
             Launch(String),
             Link(SignalAccount),
             Manage(SignalAccount),
+            Forget(String),
             RefreshLastSeen(SignalAccount),
         }
         let mut action: Option<WelcomeAction> = None;
@@ -68,6 +69,11 @@ impl SignalSetupApp {
                                     .color(MUTED),
                             );
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if text_button(ui, "Forget", ERROR_RED) {
+                                action = Some(WelcomeAction::Forget(account.phone.clone()));
+                            }
+                        });
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -190,6 +196,17 @@ impl SignalSetupApp {
             Some(WelcomeAction::Manage(account)) => {
                 let ctx = ui.ctx().clone();
                 self.open_account(ctx, account);
+            }
+            Some(WelcomeAction::Forget(phone)) => {
+                if let Err(e) = persistence::delete(&phone) {
+                    self.status = Status::Error(format!("Could not remove the account: {e}"));
+                } else {
+                    self.forget_account(&phone);
+                    self.status = Status::Success(format!(
+                        "Forgot {phone} on this computer. The Signal account and its linked \
+                         devices keep working."
+                    ));
+                }
             }
             Some(WelcomeAction::RefreshLastSeen(mut account)) => {
                 let ctx = ui.ctx().clone();

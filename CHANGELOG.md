@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "Done" on the completion screen returns to the saved accounts list.
 - The account screen can delete the Signal account itself (unregister the
   number from Signal, after a confirmation), next to forgetting it on this
-  computer only.
+  computer only. Each card on the start screen also has a quick "Forget".
 
 ## [3.4.0]- 2026-10-02
 
