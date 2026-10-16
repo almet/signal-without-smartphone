@@ -3,8 +3,8 @@
 //! test UI changes, for instance. The different modes can be passed as flags when
 //! running the binary (--staging or --demo).
 //!
-//! I'm not particularly happy with how this is designed as of now, but at least it's
-//! working :-)
+//! I'm not particularly happy with how this is designed as of now, but at least it
+//! works :-)
 
 use signal_setup_core as core;
 use signal_setup_core::demo;
