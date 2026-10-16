@@ -13,6 +13,7 @@ pub(crate) enum Step {
     /// The welcome screen is only shown when a previous account was linked
     Welcome,
     Account,
+    Import,
     #[default]
     PhoneInput,
     Captcha,
@@ -26,7 +27,7 @@ impl Step {
     /// outside the registration flow and shows no indicator.
     fn number(self) -> usize {
         match self {
-            Step::Welcome | Step::Account => 0,
+            Step::Welcome | Step::Account | Step::Import => 0,
             Step::PhoneInput => 1,
             Step::Captcha => 2,
             Step::Verification => 3,
@@ -79,6 +80,10 @@ pub(crate) enum WorkResult {
         json: String,
     },
     ExportError(String),
+    ImportOk {
+        account: SignalAccount,
+    },
+    ImportError(String),
 }
 
 #[derive(Default, Clone)]
@@ -121,6 +126,10 @@ pub(crate) struct SignalSetupApp {
     pub(crate) export_passphrase_confirm: String,
     /// Last export location and content (for the clipboard).
     pub(crate) export_result: Option<(Option<std::path::PathBuf>, String)>,
+    /// Pasted key file contents or path on the import screen.
+    pub(crate) import_text: String,
+    pub(crate) import_passphrase: String,
+    pub(crate) import_file_name: Option<String>,
 }
 
 impl SignalSetupApp {
@@ -203,6 +212,33 @@ impl SignalSetupApp {
         self.device_uri.clear();
         self.status = Status::Info(message.into());
         self.step = Step::Linking;
+    }
+
+    pub(crate) fn load_import_file(&mut self, file: &egui::DroppedFile) {
+        let contents = if let Some(bytes) = file.bytes.as_deref() {
+            String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())
+        } else if let Some(path) = file.path.as_deref() {
+            std::fs::read_to_string(path).map_err(|e| e.to_string())
+        } else {
+            Err("the dropped item is not a readable file".into())
+        };
+        match contents {
+            Ok(text) => {
+                self.import_text = text;
+                self.import_file_name = Some(if file.name.is_empty() {
+                    file.path
+                        .as_deref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "dropped file".into())
+                } else {
+                    file.name.clone()
+                });
+                self.status =
+                    Status::Info("Key file loaded. Enter its passphrase to import.".into());
+            }
+            Err(e) => self.status = Status::Error(format!("Could not read the dropped file: {e}")),
+        }
     }
 
     pub(crate) fn selected_account(&self) -> Option<SignalAccount> {
@@ -401,6 +437,30 @@ impl eframe::App for SignalSetupApp {
                 WorkResult::ExportError(e) => {
                     self.status = Status::Error(format!("Could not export the keys: {e}"));
                 }
+                WorkResult::ImportOk { mut account } => {
+                    let replaced = self.accounts.iter().any(|a| a.phone == account.phone);
+                    self.assign_desktop_profile(&mut account);
+                    self.remember_account(&account);
+                    self.import_text.clear();
+                    self.import_passphrase.clear();
+                    self.import_file_name = None;
+                    let verb = if replaced { "updated" } else { "imported" };
+                    let message = format!(
+                        "Account {} {verb}. Now link Signal Desktop on this computer.",
+                        account.phone
+                    );
+                    self.start_linking(account, &message);
+                }
+                WorkResult::ImportError(e) => {
+                    self.status = Status::Error(format!("Could not import the key file: {e}"));
+                }
+            }
+        }
+
+        if self.step == Step::Import {
+            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+            if let Some(file) = dropped.first() {
+                self.load_import_file(file);
             }
         }
 
@@ -469,6 +529,7 @@ impl eframe::App for SignalSetupApp {
                             match self.step {
                                 Step::Welcome => self.ui_welcome(ui),
                                 Step::Account => self.ui_account(ui, ctx),
+                                Step::Import => self.ui_import(ui, ctx),
                                 Step::PhoneInput => self.ui_phone(ui, ctx),
                                 Step::Captcha => self.ui_captcha(ui, ctx),
                                 Step::Verification => self.ui_verify(ui, ctx),

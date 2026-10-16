@@ -1,6 +1,7 @@
 //! Welcome screen: shown at startup when saved accounts exist. Lets the user
 //! launch Signal Desktop for a saved account, link another Desktop to it,
-//! open its management screen, or start registering a new number.
+//! open its management screen, import an account from a key file, or start
+//! registering a new number.
 
 use eframe::egui;
 use egui::RichText;
@@ -134,18 +135,40 @@ impl SignalSetupApp {
         }
 
         ui.add_space(8.0);
-        if ui
-            .add(
-                egui::Button::new(RichText::new("Register a new number").size(15.0))
-                    .rounding(egui::Rounding::same(8.0))
-                    .min_size(egui::vec2(200.0, 40.0)),
-            )
-            .clicked()
-        {
+        let mut register = false;
+        let mut import = false;
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Register a new number").size(15.0))
+                        .rounding(egui::Rounding::same(8.0))
+                        .min_size(egui::vec2(200.0, 40.0)),
+                )
+                .clicked()
+            {
+                register = true;
+            }
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Import a key file").size(15.0))
+                        .rounding(egui::Rounding::same(8.0))
+                        .min_size(egui::vec2(160.0, 40.0)),
+                )
+                .clicked()
+            {
+                import = true;
+            }
+        });
+        if register {
             self.phone.clear();
             self.signal_account = None;
             self.status = Status::None;
             self.step = Step::PhoneInput;
+            return;
+        }
+        if import {
+            self.status = Status::None;
+            self.step = Step::Import;
             return;
         }
 

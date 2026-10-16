@@ -7,7 +7,7 @@ use signal_setup_core as core;
 use crate::app::{SignalSetupApp, WorkResult};
 use crate::backend;
 use crate::theme::*;
-use crate::widgets::{format_error_chain, step_header, submit_row};
+use crate::widgets::{format_error_chain, step_header, submit_row, text_button};
 
 impl SignalSetupApp {
     pub(crate) fn ui_phone(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -65,6 +65,20 @@ impl SignalSetupApp {
 
         let ready = !self.phone.is_empty();
         let clicked = submit_row(ui, ready, "Register");
+
+        if !self.accounts.is_empty() || self.step == crate::app::Step::PhoneInput {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if text_button(
+                    ui,
+                    "Have a key file from someone else? Import it",
+                    SIGNAL_BLUE,
+                ) {
+                    self.status = crate::app::Status::None;
+                    self.step = crate::app::Step::Import;
+                }
+            });
+        }
 
         if clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && ready)
         {

@@ -7,6 +7,7 @@
 mod account;
 mod captcha;
 mod complete;
+mod import;
 mod linking;
 mod phone;
 mod verify;
