@@ -84,6 +84,10 @@ pub(crate) enum WorkResult {
         account: SignalAccount,
     },
     ImportError(String),
+    AccountDeletedOk {
+        phone: String,
+    },
+    AccountDeleteError(String),
 }
 
 #[derive(Default, Clone)]
@@ -126,7 +130,8 @@ pub(crate) struct SignalSetupApp {
     pub(crate) export_passphrase_confirm: String,
     /// Last export location and content (for the clipboard).
     pub(crate) export_result: Option<(Option<std::path::PathBuf>, String)>,
-    /// Pasted key file contents or path on the import screen.
+    pub(crate) confirm_account_deletion: bool,
+    /// Pasted key file contents (or path)
     pub(crate) import_text: String,
     pub(crate) import_passphrase: String,
     pub(crate) import_file_name: Option<String>,
@@ -191,6 +196,7 @@ impl SignalSetupApp {
         self.export_passphrase.clear();
         self.export_passphrase_confirm.clear();
         self.export_result = None;
+        self.confirm_account_deletion = false;
         self.status = Status::None;
         self.step = Step::Account;
         self.load_devices(ctx, account);
@@ -239,6 +245,15 @@ impl SignalSetupApp {
             }
             Err(e) => self.status = Status::Error(format!("Could not read the dropped file: {e}")),
         }
+    }
+
+    /// Only drops the cache entry
+    pub(crate) fn forget_account(&mut self, phone: &str) {
+        self.accounts.retain(|a| a.phone != phone);
+        self.selected_phone = None;
+        self.devices = None;
+        self.confirm_account_deletion = false;
+        self.step = Step::Welcome;
     }
 
     pub(crate) fn selected_account(&self) -> Option<SignalAccount> {
@@ -453,6 +468,26 @@ impl eframe::App for SignalSetupApp {
                 }
                 WorkResult::ImportError(e) => {
                     self.status = Status::Error(format!("Could not import the key file: {e}"));
+                }
+                WorkResult::AccountDeletedOk { phone } => {
+                    // The keys are useless now, forget them locally too.
+                    let removed = persistence::delete(&phone);
+                    self.forget_account(&phone);
+                    self.status = match removed {
+                        Ok(()) => Status::Success(format!(
+                            "The Signal account {phone} was deleted. The number can be \
+                             registered again."
+                        )),
+                        Err(e) => Status::Error(format!(
+                            "The Signal account {phone} was deleted, but its local copy \
+                             could not be removed: {e}"
+                        )),
+                    };
+                }
+                WorkResult::AccountDeleteError(e) => {
+                    self.confirm_account_deletion = false;
+                    self.status =
+                        Status::Error(format!("Could not delete the Signal account: {e}"));
                 }
             }
         }

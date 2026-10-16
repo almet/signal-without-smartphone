@@ -1,5 +1,6 @@
 //! Account management screen: linked devices (with unlink), registration
-//! lock, key file export, and removal from this computer.
+//! lock, key file export, removal from this computer, and deletion of the
+//! Signal account itself.
 
 use eframe::egui;
 use egui::RichText;
@@ -35,7 +36,9 @@ impl SignalSetupApp {
             SetLock(bool),
             Export,
             CopyExport,
-            Delete,
+            Forget,
+            DeleteAccount,
+            CancelDeleteAccount,
         }
         let mut action: Option<AccountAction> = None;
 
@@ -214,20 +217,62 @@ impl SignalSetupApp {
             }
         });
 
-        // Danger zone
-        section(ui, "Remove from this computer", |ui| {
+        section(ui, "Remove this account", |ui| {
             ui.label(
                 RichText::new(
-                    "Forgets the account's keys on this computer. The Signal account itself \
-                     and its linked devices keep working. Export a key file first if you may \
-                     need it again.",
+                    "Forget on this computer: the keys are removed from here, but the \
+                     Signal account and its linked devices keep working. Export a key \
+                     file first if you may need them again.",
                 )
                 .color(MUTED)
                 .size(13.0),
             );
             ui.add_space(6.0);
-            if text_button(ui, "Delete this account from this computer", ERROR_RED) {
-                action = Some(AccountAction::Delete);
+            if text_button(ui, "Forget this account on this computer", ERROR_RED) {
+                action = Some(AccountAction::Forget);
+            }
+
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(
+                    "Delete the Signal account: the number is unregistered from Signal, \
+                     every linked Signal Desktop stops working. This cannot be undone.",
+                )
+                .color(MUTED)
+                .size(13.0),
+            );
+            ui.add_space(6.0);
+            if self.confirm_account_deletion {
+                ui.label(
+                    RichText::new(format!(
+                        "⚠ Really delete the Signal account {}? ",
+                        account.phone
+                    ))
+                    .color(WARNING_AMBER)
+                    .size(13.0),
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Yes, delete the Signal account")
+                                    .color(egui::Color32::WHITE)
+                                    .size(14.0),
+                            )
+                            .fill(ERROR_RED)
+                            .rounding(egui::Rounding::same(6.0))
+                            .min_size(egui::vec2(0.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        action = Some(AccountAction::DeleteAccount);
+                    }
+                    if secondary_button(ui, "Cancel", true) {
+                        action = Some(AccountAction::CancelDeleteAccount);
+                    }
+                });
+            } else if text_button(ui, "Delete the Signal account", ERROR_RED) {
+                self.confirm_account_deletion = true;
             }
         });
 
@@ -303,16 +348,28 @@ impl SignalSetupApp {
                     }
                 }
             }
-            Some(AccountAction::Delete) => {
+            Some(AccountAction::Forget) => {
                 if let Err(e) = persistence::delete(&account.phone) {
-                    self.status = Status::Error(format!("Could not delete account: {e}"));
+                    self.status = Status::Error(format!("Could not remove the account: {e}"));
                 } else {
-                    self.accounts.retain(|a| a.phone != account.phone);
-                    self.selected_phone = None;
-                    self.devices = None;
-                    self.status = Status::Success(format!("Deleted {}.", account.phone));
-                    self.step = Step::Welcome;
+                    self.forget_account(&account.phone);
+                    self.status =
+                        Status::Success(format!("Forgot {} on this computer.", account.phone));
                 }
+            }
+            Some(AccountAction::DeleteAccount) => {
+                self.status = Status::Info("Deleting the Signal account…".into());
+                self.spawn(ctx.clone(), move || {
+                    match backend::delete_account(&account) {
+                        Ok(()) => WorkResult::AccountDeletedOk {
+                            phone: account.phone.clone(),
+                        },
+                        Err(e) => WorkResult::AccountDeleteError(format_error_chain(&e)),
+                    }
+                });
+            }
+            Some(AccountAction::CancelDeleteAccount) => {
+                self.confirm_account_deletion = false;
             }
             None => {}
         }

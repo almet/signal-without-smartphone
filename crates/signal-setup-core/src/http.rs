@@ -19,6 +19,7 @@
 //!   5. `set_registration_lock` enables or disables Signal's registration
 //!      lock, which stops anyone holding the SIM from re-registering the
 //!      number unless they know the account's master key.
+//!   6. `delete_account` unregisters the account from Signal altogether.
 
 use base64::prelude::*;
 use libsignal_protocol::{self as sigprot, Aci, IdentityKey, IdentityKeyPair};
@@ -477,7 +478,30 @@ pub fn set_registration_lock(
     Ok(())
 }
 
-/// List every device attached to the account, primary included, sorted by id.
+/// Delete the Signal account on the server.
+pub fn delete_account(account: &SignalAccount) -> Result<(), SignalError> {
+    let aci = account
+        .aci
+        .as_deref()
+        .ok_or_else(|| SignalError::Other("Account has no ACI. Cannot delete it".into()))?;
+    let client = build_client();
+    let resp = client
+        .delete(format!("{}/v1/accounts/me", signal_api()))
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(SignalError::Api {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(())
+}
+
+/// List every device attached to the account, primary included.
 pub fn list_devices(account: &SignalAccount) -> Result<Vec<LinkedDevice>, SignalError> {
     let client = build_client();
     fetch_devices(&client, account)

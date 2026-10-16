@@ -18,6 +18,7 @@
 //!   5. `set_registration_lock` protects the number against re-registration.
 //!   6. `backup::export_account` / `backup::import_account` move an account's
 //!      keys between machines as a passphrase-encrypted file.
+//!   7. `delete_account` unregisters the account from Signal.
 //!
 //! The library is split into cohesive modules: `types` (account data types),
 //! `proto` (inline protobuf wire types), `crypto` (pure cryptographic

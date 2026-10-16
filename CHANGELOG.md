@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Link several Signal Desktop instances to one account (Signal allows five
+  linked devices). The linker now detects which device id Signal Desktop
+  received instead of assuming device 2, and sends the post-link sync to
+  every linked device, as Signal requires. A new per-account screen lists
+  the linked devices (with their names) and can unlink them. Fixes #8.
+- Export an account's keys to a passphrase-encrypted key file (Argon2id +
+  AES-256-GCM) and import such a file on another computer, then link that
+  computer's Signal Desktop. This is how one account can be shared between
+  several people or machines, and how keys are backed up. Fixes #7.
+- Registration lock: new accounts are protected by default (opt-out at
+  registration, toggle later from the account screen). The lock token is
+  derived from the account's master key, which lives in the keyring and in
+  exported key files; whoever imports the key file can re-register the
+  number, nobody else can while the lock holds. Re-registering a number
+  already saved on this computer passes its lock automatically. Fixes #14.
+- Validate Signal's servers against Signal's root CA instead of pinning the
+  leaf certificate, for both production and staging. Leaf rotations no
+  longer break the tool, and the daily CI check now verifies that the live
+  chain still validates against the bundled CA. Fixes #9.
+- "Done" on the completion screen returns to the saved accounts list.
+- The account screen can delete the Signal account itself (unregister the
+  number from Signal, after a confirmation), next to forgetting it on this
+  computer only.
 
 ## [3.4.0]- 2026-10-02
 

@@ -86,6 +86,13 @@ pub(crate) fn set_registration_lock(
     }
 }
 
+pub(crate) fn delete_account(account: &SignalAccount) -> Result<(), SignalError> {
+    match mode() {
+        Mode::Demo => demo::delete_account(account),
+        _ => core::delete_account(account),
+    }
+}
+
 pub(crate) fn list_devices(account: &SignalAccount) -> Result<Vec<LinkedDevice>, SignalError> {
     match mode() {
         Mode::Demo => demo::list_devices(account),

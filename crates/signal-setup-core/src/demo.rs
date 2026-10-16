@@ -81,6 +81,11 @@ pub fn set_registration_lock(
     Ok(())
 }
 
+pub fn delete_account(_account: &SignalAccount) -> Result<(), SignalError> {
+    fake_delay();
+    Ok(())
+}
+
 pub fn list_devices(_account: &SignalAccount) -> Result<Vec<LinkedDevice>, SignalError> {
     fake_delay();
     let now = now_unix();
