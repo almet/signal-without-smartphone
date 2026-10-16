@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::RichText;
-use signal_setup_core::SignalAccount;
 use signal_setup_core::{desktop, persistence};
+use signal_setup_core::{LinkedDevice, SignalAccount};
 use std::sync::mpsc;
 
 use crate::theme::*;
@@ -48,7 +48,9 @@ pub(crate) enum WorkResult {
     },
     VerifyError(String),
     DeviceTransferAvailable,
-    LinkOk,
+    LinkOk {
+        device: LinkedDevice,
+    },
     LinkError(String),
     RefreshLastSeenOk {
         account: SignalAccount,
@@ -260,8 +262,16 @@ impl eframe::App for SignalSetupApp {
                     self.device_transfer_available = true;
                     self.status = Status::None;
                 }
-                WorkResult::LinkOk => {
-                    self.status = Status::Success("Device linked successfully!".into());
+                WorkResult::LinkOk { device } => {
+                    let name = device
+                        .name
+                        .as_deref()
+                        .map(|n| format!(" \"{n}\""))
+                        .unwrap_or_default();
+                    self.status = Status::Success(format!(
+                        "Device{name} linked successfully as device {}.",
+                        device.id
+                    ));
                     self.step = Step::Complete;
                 }
                 WorkResult::LinkError(e) => {

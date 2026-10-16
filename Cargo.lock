@@ -5098,6 +5098,7 @@ dependencies = [
  "apple-native-keyring-store",
  "base64 0.22.1",
  "cbc",
+ "ctr",
  "dbus-secret-service-keyring-store",
  "dirs",
  "hex",

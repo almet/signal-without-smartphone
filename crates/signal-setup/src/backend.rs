@@ -8,7 +8,7 @@
 
 use signal_setup_core as core;
 use signal_setup_core::demo;
-use signal_setup_core::{RegistrationOptions, SignalAccount};
+use signal_setup_core::{LinkedDevice, RegistrationOptions, SignalAccount};
 use signal_setup_core::{SignalError, VerificationRequest};
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -57,7 +57,7 @@ pub(crate) fn verify_and_register(
     }
 }
 
-pub(crate) fn link_device(account: &SignalAccount, uri: &str) -> Result<(), SignalError> {
+pub(crate) fn link_device(account: &SignalAccount, uri: &str) -> Result<LinkedDevice, SignalError> {
     match mode() {
         Mode::Demo => demo::link_device(account, uri),
         _ => core::link_device(account, uri),

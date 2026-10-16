@@ -4,7 +4,9 @@
 //!
 //! The code `000000` forces a device transfer, `111111` a registration lock.
 
-use crate::types::{RegistrationOptions, SignalAccount, SignalError, VerificationRequest};
+use crate::types::{
+    now_unix, LinkedDevice, RegistrationOptions, SignalAccount, SignalError, VerificationRequest,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -79,7 +81,42 @@ pub fn set_registration_lock(
     Ok(())
 }
 
-pub fn link_device(_account: &SignalAccount, uri: &str) -> Result<(), SignalError> {
+pub fn list_devices(_account: &SignalAccount) -> Result<Vec<LinkedDevice>, SignalError> {
+    fake_delay();
+    let now = now_unix();
+    Ok(vec![
+        LinkedDevice {
+            id: 1,
+            name: None,
+            created: now - 30 * 86_400,
+            last_seen: now,
+        },
+        LinkedDevice {
+            id: 2,
+            name: Some("Office laptop".into()),
+            created: now - 29 * 86_400,
+            last_seen: now - 86_400,
+        },
+        LinkedDevice {
+            id: 3,
+            name: Some("Kitchen computer".into()),
+            created: now - 3 * 86_400,
+            last_seen: now - 20 * 86_400,
+        },
+    ])
+}
+
+pub fn unlink_device(_account: &SignalAccount, device_id: u32) -> Result<(), SignalError> {
+    fake_delay();
+    if device_id == LinkedDevice::PRIMARY_ID {
+        return Err(SignalError::Other(
+            "The primary device cannot be unlinked".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn link_device(_account: &SignalAccount, uri: &str) -> Result<LinkedDevice, SignalError> {
     fake_delay();
 
     if !["tsdevice://", "sgnl://"]
@@ -91,5 +128,10 @@ pub fn link_device(_account: &SignalAccount, uri: &str) -> Result<(), SignalErro
         ));
     }
 
-    Ok(())
+    Ok(LinkedDevice {
+        id: 4,
+        name: Some("Demo desktop".into()),
+        created: now_unix(),
+        last_seen: now_unix(),
+    })
 }

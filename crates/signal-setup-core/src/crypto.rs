@@ -49,7 +49,7 @@ use rand::RngCore;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 
-use crate::proto::{ProvisionEnvelope, ProvisionMessage};
+use crate::proto::{DeviceNameProto, ProvisionEnvelope, ProvisionMessage};
 use crate::types::{SignalAccount, SignalError};
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
@@ -61,6 +61,55 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 /// Derive the registration lock token from the account's 32-byte master key.
 pub(crate) fn derive_registration_lock(master_key: &[u8]) -> String {
     hex::encode(hmac_sha256(master_key, b"Registration Lock"))
+}
+
+/// Decrypt a device name uploaded by a linked device.
+///
+/// Mirrors Signal's `DeviceNameCipher`: the device derives a shared secret
+/// between a fresh ephemeral key and the account's ACI identity key, then
+/// splits it into an authentication key (which yields a 16-byte synthetic IV
+/// from the plaintext) and a cipher key (which, mixed with that IV, is the
+/// AES-256-CTR key).
+pub(crate) fn decrypt_device_name(
+    identity: &sigprot::IdentityKeyPair,
+    encrypted: &[u8],
+) -> Result<String, SignalError> {
+    use aes::cipher::StreamCipher;
+
+    let proto = DeviceNameProto::decode(encrypted)
+        .map_err(|e| SignalError::Other(format!("decode device name: {e}")))?;
+    let (Some(ephemeral), Some(synthetic_iv), Some(ciphertext)) =
+        (proto.ephemeral_public, proto.synthetic_iv, proto.ciphertext)
+    else {
+        return Err(SignalError::Other("device name is missing fields".into()));
+    };
+    if synthetic_iv.len() != 16 {
+        return Err(SignalError::Other("device name has a malformed IV".into()));
+    }
+
+    let ephemeral = sigprot::PublicKey::deserialize(&ephemeral)
+        .map_err(|e| SignalError::Other(format!("device name ephemeral key: {e}")))?;
+    let master_secret = identity
+        .private_key()
+        .calculate_agreement(&ephemeral)
+        .map_err(|e| SignalError::Other(format!("device name key agreement: {e}")))?;
+
+    let auth_key = hmac_sha256(&master_secret, b"auth");
+    let cipher_key_base = hmac_sha256(&master_secret, b"cipher");
+    let cipher_key = hmac_sha256(&cipher_key_base, &synthetic_iv);
+
+    let mut plaintext = ciphertext;
+    let mut cipher = ctr::Ctr128BE::<aes::Aes256>::new((&cipher_key).into(), (&[0u8; 16]).into());
+    cipher.apply_keystream(&mut plaintext);
+
+    let expected_iv = hmac_sha256(&auth_key, &plaintext);
+    if expected_iv[..16] != synthetic_iv[..] {
+        return Err(SignalError::Other(
+            "device name failed authentication".into(),
+        ));
+    }
+    String::from_utf8(plaintext)
+        .map_err(|_| SignalError::Other("device name is not valid UTF-8".into()))
 }
 
 /// `libsignal-protocol` uses rand 0.9, while `x25519-dalek` and `xeddsa` still
@@ -136,20 +185,30 @@ pub(crate) struct DevicePreKeyBundle {
     pub one_time_prekey_bytes: Option<Vec<u8>>,
 }
 
-/// Encrypt plaintext with X3DH session establishment and Double Ratchet encryption.
+/// In-memory Signal Protocol state for the primary device (device 1), used
+/// to establish one session per linked device and encrypt sync messages.
+pub(crate) fn new_protocol_store(
+    account: &SignalAccount,
+) -> Result<InMemSignalProtocolStore, SignalError> {
+    Ok(InMemSignalProtocolStore::new(
+        account.aci_identity,
+        account.registration_id,
+    )?)
+}
+
+/// Encrypt plaintext for linked device `device_id` with X3DH session
+/// establishment and Double Ratchet encryption.
 pub(crate) async fn encrypt_with_libsignal(
     plaintext: &[u8],
     account: &SignalAccount,
+    store: &mut InMemSignalProtocolStore,
+    device_id: u32,
     bundle: &DevicePreKeyBundle,
     rng: &mut StdRng,
 ) -> Result<CiphertextMessage, SignalError> {
-    let receiver_address = ProtocolAddress::new(
-        account.aci.clone().unwrap_or_default(),
-        DeviceId::try_from(2u32).expect("valid device id"),
-    );
-
-    // Create an in-memory "protocol store" for the sender (primary device)
-    let mut store = InMemSignalProtocolStore::new(account.aci_identity, account.registration_id)?;
+    let device = DeviceId::try_from(device_id)
+        .map_err(|_| SignalError::Other(format!("invalid device id {device_id}")))?;
+    let receiver_address = ProtocolAddress::new(account.aci.clone().unwrap_or_default(), device);
 
     // Parse the signed pre-key public key from the bundle
     let signed_prekey_pub = sigprot::PublicKey::deserialize(&bundle.signed_prekey_bytes)
@@ -178,7 +237,7 @@ pub(crate) async fn encrypt_with_libsignal(
 
         PreKeyBundle::new(
             bundle.registration_id,
-            DeviceId::try_from(2u32).expect("valid device id"),
+            device,
             pre_key_opt,
             SignedPreKeyId::from(bundle.signed_prekey_id),
             signed_prekey_pub,
@@ -418,6 +477,50 @@ mod tests {
             "0c5f865eea5eebe9ef4fa8c4d99cb91de301bebb5b3b91bf775da1a57c725975"
         );
         assert_eq!(derive_registration_lock(&master_key).len(), 64);
+    }
+
+    /// Encrypt a device name the way linked devices do (`DeviceNameCipher`),
+    /// so the decryption path can be tested end to end.
+    fn encrypt_device_name(name: &[u8], identity: &IdentityKeyPair, rng: &mut StdRng) -> Vec<u8> {
+        use aes::cipher::StreamCipher;
+        let ephemeral = sigprot::KeyPair::generate(rng);
+        let master_secret = ephemeral
+            .private_key
+            .calculate_agreement(identity.identity_key().public_key())
+            .unwrap();
+        let auth_key = hmac_sha256(&master_secret, b"auth");
+        let synthetic_iv = hmac_sha256(&auth_key, name)[..16].to_vec();
+        let cipher_key_base = hmac_sha256(&master_secret, b"cipher");
+        let cipher_key = hmac_sha256(&cipher_key_base, &synthetic_iv);
+        let mut ciphertext = name.to_vec();
+        ctr::Ctr128BE::<aes::Aes256>::new((&cipher_key).into(), (&[0u8; 16]).into())
+            .apply_keystream(&mut ciphertext);
+        DeviceNameProto {
+            ephemeral_public: Some(ephemeral.public_key.serialize().to_vec()),
+            synthetic_iv: Some(synthetic_iv),
+            ciphertext: Some(ciphertext),
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn test_decrypt_device_name_roundtrip() {
+        let mut rng = StdRng::from_os_rng();
+        let identity = IdentityKeyPair::generate(&mut rng);
+        let encrypted = encrypt_device_name("Alice's laptop".as_bytes(), &identity, &mut rng);
+        assert_eq!(
+            decrypt_device_name(&identity, &encrypted).unwrap(),
+            "Alice's laptop"
+        );
+    }
+
+    #[test]
+    fn test_decrypt_device_name_rejects_wrong_identity() {
+        let mut rng = StdRng::from_os_rng();
+        let identity = IdentityKeyPair::generate(&mut rng);
+        let other = IdentityKeyPair::generate(&mut rng);
+        let encrypted = encrypt_device_name(b"laptop", &identity, &mut rng);
+        assert!(decrypt_device_name(&other, &encrypted).is_err());
     }
 
     #[test]

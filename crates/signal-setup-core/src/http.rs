@@ -12,9 +12,11 @@
 //!      Signal Desktop's QR code and provisions Desktop as a linked device via
 //!      Signal's provisioning API, then sends the initial sync messages using
 //!      libsignal-protocol.
+//!   4. `list_devices` / `unlink_device` manage the account's linked devices
+//!      (Signal allows a primary plus up to five linked devices).
 //!
 //! Account protection:
-//!   4. `set_registration_lock` enables or disables Signal's registration
+//!   5. `set_registration_lock` enables or disables Signal's registration
 //!      lock, which stops anyone holding the SIM from re-registering the
 //!      number unless they know the account's master key.
 
@@ -30,13 +32,16 @@ use std::collections::HashMap;
 use x25519_dalek::PublicKey as X25519Public;
 
 use crate::crypto::{
-    derive_registration_lock, encrypt_profile_field, encrypt_provision_message,
-    encrypt_with_libsignal, parse_uuid_bytes, pem_to_der, random_password, DevicePreKeyBundle,
+    decrypt_device_name, derive_registration_lock, encrypt_profile_field,
+    encrypt_provision_message, encrypt_with_libsignal, new_protocol_store, parse_uuid_bytes,
+    pem_to_der, random_password, DevicePreKeyBundle,
 };
 use crate::proto::{
     ContentProto, ProvisionMessage, SyncBlockedProto, SyncContactsProto, SyncMsgProto,
 };
-use crate::types::{RegistrationOptions, SignalAccount, SignalError, VerificationRequest};
+use crate::types::{
+    LinkedDevice, RegistrationOptions, SignalAccount, SignalError, VerificationRequest,
+};
 
 const SIGNAL_PROD: &str = "https://chat.signal.org";
 const SIGNAL_STAGING: &str = "https://chat.staging.signal.org";
@@ -472,6 +477,93 @@ pub fn set_registration_lock(
     Ok(())
 }
 
+/// List every device attached to the account, primary included, sorted by id.
+pub fn list_devices(account: &SignalAccount) -> Result<Vec<LinkedDevice>, SignalError> {
+    let client = build_client();
+    fetch_devices(&client, account)
+}
+
+/// Unlink a device.
+pub fn unlink_device(account: &SignalAccount, device_id: u32) -> Result<(), SignalError> {
+    if device_id == LinkedDevice::PRIMARY_ID {
+        return Err(SignalError::Other(
+            "The primary device cannot be unlinked".into(),
+        ));
+    }
+    let aci = account
+        .aci
+        .as_deref()
+        .ok_or_else(|| SignalError::Other("Account has no ACI. Cannot unlink devices".into()))?;
+    let client = build_client();
+    let resp = client
+        .delete(format!("{}/v1/devices/{device_id}", signal_api()))
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(SignalError::Api {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(())
+}
+
+fn fetch_devices(
+    client: &Client,
+    account: &SignalAccount,
+) -> Result<Vec<LinkedDevice>, SignalError> {
+    let aci = account
+        .aci
+        .as_deref()
+        .ok_or_else(|| SignalError::Other("Account has no ACI. Cannot list devices".into()))?;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DeviceList {
+        devices: Vec<DeviceInfo>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DeviceInfo {
+        id: u32,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        created: u64,
+        #[serde(default)]
+        last_seen: u64,
+    }
+
+    let resp = client
+        .get(format!("{}/v1/devices", signal_api()))
+        .header("X-Signal-Agent", "OWD")
+        .basic_auth(aci, Some(&account.password))
+        .send()?;
+    let list: DeviceList = parse_response(resp)?;
+
+    let mut devices: Vec<LinkedDevice> = list
+        .devices
+        .into_iter()
+        .map(|d| LinkedDevice {
+            id: d.id,
+            name: d
+                .name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .and_then(|n| BASE64_STANDARD.decode(n).ok())
+                .and_then(|bytes| decrypt_device_name(&account.aci_identity, &bytes).ok()),
+            // Signal reports milliseconds; the rest of the crate uses seconds.
+            created: d.created / 1000,
+            last_seen: d.last_seen / 1000,
+        })
+        .collect();
+    devices.sort_by_key(|d| d.id);
+    Ok(devices)
+}
+
 fn upload_versioned_profile(
     client: &Client,
     aci_str: &str,
@@ -540,15 +632,33 @@ fn upload_versioned_profile(
     Ok(())
 }
 
+const LINK_TIMEOUT_SECS: u64 = 180;
+
+/// Signal allows one primary plus this many linked devices.
+pub const MAX_LINKED_DEVICES: usize = 5;
+
 /// Link Signal Desktop as a secondary device using a `tsdevice://` or
-/// `sgnl://linkdevice` URI decoded from its QR code.
-///
-/// The `account` must come from a successful `verify_and_register` call.
-pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), SignalError> {
+/// `sgnl://linkdevice` URI.
+pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<LinkedDevice, SignalError> {
     let client = build_client();
     let mut rng = StdRng::from_os_rng();
 
     let (ephemeral_id, device_pub_key_bytes) = parse_device_uri(device_uri)?;
+
+    let devices_before: Vec<u32> = fetch_devices(&client, account)?
+        .into_iter()
+        .map(|d| d.id)
+        .collect();
+    let linked_before = devices_before
+        .iter()
+        .filter(|id| **id != LinkedDevice::PRIMARY_ID)
+        .count();
+    if linked_before >= MAX_LINKED_DEVICES {
+        return Err(SignalError::Other(format!(
+            "This account already has {MAX_LINKED_DEVICES} linked devices, which is Signal's \
+             maximum. Unlink one from the account screen first."
+        )));
+    }
 
     // The key in the URI is DJB-encoded (0x05 prefix + 32 bytes).
     let key_slice = if device_pub_key_bytes.len() == 33 && device_pub_key_bytes[0] == 0x05 {
@@ -640,13 +750,39 @@ pub fn link_device(account: &SignalAccount, device_uri: &str) -> Result<(), Sign
         });
     }
 
+    let new_device = wait_for_new_device(&client, account, &devices_before, LINK_TIMEOUT_SECS)?;
+
     // Signal Desktop waits for sync messages from device 1 after linking.
     // We send a SyncMessage{contacts.isComplete=true, blocked={}} so Desktop
     // knows sync is complete and transitions to the main screen.
     // We ignore errors here: Desktop will eventually time out gracefully.
-    let _ = send_linked_device_sync(&client, account, &mut rng);
+    let _ = send_linked_device_sync(&client, account, new_device.id, &mut rng);
 
-    Ok(())
+    Ok(new_device)
+}
+
+fn wait_for_new_device(
+    client: &Client,
+    account: &SignalAccount,
+    known_ids: &[u32],
+    timeout_secs: u64,
+) -> Result<LinkedDevice, SignalError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        if let Ok(devices) = fetch_devices(client, account) {
+            if let Some(d) = devices.into_iter().find(|d| !known_ids.contains(&d.id)) {
+                return Ok(d);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(SignalError::Other(
+                "Timed out waiting for Signal Desktop to finish linking. Confirm the \
+                 device name in Signal Desktop, then link again with a fresh QR code."
+                    .into(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
 }
 
 /// Fetch device 2's pre-key bundle, retrying for up to `timeout_secs` seconds
@@ -761,15 +897,13 @@ fn fetch_device_prekeys(
     }
 }
 
-/// After delivering the ProvisionMessage, wait for Signal Desktop to register as
-/// device 2, then send it an empty `SyncMessage` (contacts complete, no blocked)
-/// via Signal Protocol so it transitions out of the "Syncing…" waiting screen.
-///
-/// Uses `libsignal-protocol` for proper X3DH session establishment and
-/// Double Ratchet encryption.
+/// After Signal Desktop registered as device `new_device_id`, send it an empty
+/// `SyncMessage` (contacts complete, no blocked) via Signal Protocol so it
+/// transitions out of the "Syncing…" waiting screen.
 fn send_linked_device_sync(
     client: &Client,
     account: &SignalAccount,
+    new_device_id: u32,
     rng: &mut StdRng,
 ) -> Result<(), SignalError> {
     let aci = account
@@ -777,8 +911,22 @@ fn send_linked_device_sync(
         .as_deref()
         .ok_or_else(|| SignalError::Other("no ACI".into()))?;
 
-    // Wait up to 60 s for Desktop to register and upload its pre-keys.
-    let bundle = fetch_device_prekeys(client, account, aci, 2, 60)?;
+    let mut linked_ids: Vec<u32> = fetch_devices(client, account)?
+        .into_iter()
+        .map(|d| d.id)
+        .filter(|id| *id != LinkedDevice::PRIMARY_ID)
+        .collect();
+    if !linked_ids.contains(&new_device_id) {
+        linked_ids.push(new_device_id);
+    }
+
+    // The new device may still be uploading its pre-keys: wait up to 60 s
+    // for it. Devices linked earlier have had theirs for a while.
+    let mut bundles: Vec<(u32, DevicePreKeyBundle)> = Vec::with_capacity(linked_ids.len());
+    for id in linked_ids {
+        let timeout = if id == new_device_id { 60 } else { 10 };
+        bundles.push((id, fetch_device_prekeys(client, account, aci, id, timeout)?));
+    }
 
     // Build the sync payload: empty contacts (complete) + empty blocked list.
     let plaintext = ContentProto {
@@ -797,10 +945,17 @@ fn send_linked_device_sync(
         .build()
         .map_err(|e| SignalError::Other(format!("tokio runtime: {e}")))?;
 
-    let wire =
-        rt.block_on(async { encrypt_with_libsignal(&plaintext, account, &bundle, rng).await })?;
+    let mut store = new_protocol_store(account)?;
+    let mut wires = Vec::with_capacity(bundles.len());
+    for (id, bundle) in &bundles {
+        let wire = rt.block_on(async {
+            encrypt_with_libsignal(&plaintext, account, &mut store, *id, bundle, rng).await
+        })?;
+        wires.push((*id, bundle.registration_id, wire));
+    }
 
-    // Send via Signal's message endpoint (device 1 to device 2, same account).
+    // Send via Signal's message endpoint (device 1 to every linked device
+    // of the same account).
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct OutMsg {
@@ -821,23 +976,27 @@ fn send_linked_device_sync(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let msg_type: u32 = match wire.message_type() {
-        sigprot::CiphertextMessageType::PreKey => 3,
-        sigprot::CiphertextMessageType::Whisper => 1,
-        other => {
-            return Err(SignalError::Other(format!(
-                "Unexpected ciphertext message type: {other:?}"
-            )));
-        }
-    };
+    let mut messages = Vec::with_capacity(wires.len());
+    for (device_id, registration_id, wire) in &wires {
+        let msg_type: u32 = match wire.message_type() {
+            sigprot::CiphertextMessageType::PreKey => 3,
+            sigprot::CiphertextMessageType::Whisper => 1,
+            other => {
+                return Err(SignalError::Other(format!(
+                    "Unexpected ciphertext message type: {other:?}"
+                )));
+            }
+        };
+        messages.push(OutMsg {
+            r#type: msg_type,
+            destination_device_id: *device_id,
+            destination_registration_id: *registration_id,
+            content: BASE64_STANDARD.encode(wire.serialize()),
+        });
+    }
 
     let body = SendBody {
-        messages: vec![OutMsg {
-            r#type: msg_type,
-            destination_device_id: 2,
-            destination_registration_id: bundle.registration_id,
-            content: BASE64_STANDARD.encode(wire.serialize()),
-        }],
+        messages,
         timestamp,
         online: false,
     };

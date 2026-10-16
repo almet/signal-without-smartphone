@@ -1,7 +1,7 @@
 //! Core data types shared across the crate: the in-memory `SignalAccount`,
 //! its serializable split (`PersistedAccount` + `AccountSecrets`), the
-//! `SignalError` type returned by all flows, `VerificationRequest` and
-//! `RegistrationOptions`.
+//! `SignalError` type returned by all flows, `VerificationRequest`,
+//! `RegistrationOptions` and `LinkedDevice`.
 
 use base64::prelude::*;
 use libsignal_protocol::{self as sigprot, IdentityKeyPair};
@@ -177,6 +177,29 @@ pub struct RegistrationOptions {
     /// account has a registration lock, Signal only lets the number be
     /// re-registered by a client that proves it knows this key.
     pub unlock_master_key: Option<Vec<u8>>,
+}
+
+/// One device attached to an account, as listed by Signal's `/v1/devices`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkedDevice {
+    /// Device id. `1` is the primary device (this tool); linked devices get
+    /// the next free id, so a freshly linked Signal Desktop is usually `2`.
+    pub id: u32,
+    /// Name chosen on the linked device, decrypted with the ACI identity key.
+    /// `None` when the device has no name or it could not be decrypted.
+    pub name: Option<String>,
+    /// Unix timestamp (seconds) at which the device was linked.
+    pub created: u64,
+    /// Unix timestamp (seconds) at which Signal last saw the device.
+    pub last_seen: u64,
+}
+
+impl LinkedDevice {
+    pub const PRIMARY_ID: u32 = 1;
+
+    pub fn is_primary(&self) -> bool {
+        self.id == Self::PRIMARY_ID
+    }
 }
 
 /// Error returned by all Signal API calls.

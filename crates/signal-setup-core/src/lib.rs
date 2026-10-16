@@ -13,8 +13,9 @@
 //!      Signal's provisioning API, then sends the initial sync messages using
 //!      libsignal-protocol.
 //!
-//! Account protection (after registration):
-//!   4. `set_registration_lock` protects the number against re-registration.
+//! Account management (after registration):
+//!   4. `list_devices` / `unlink_device` manage the account's linked devices.
+//!   5. `set_registration_lock` protects the number against re-registration.
 //!
 //! The library is split into cohesive modules: `types` (account data types),
 //! `proto` (inline protobuf wire types), `crypto` (pure cryptographic

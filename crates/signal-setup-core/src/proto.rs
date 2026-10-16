@@ -47,6 +47,19 @@ pub(crate) struct ProvisionMessage {
     pub pni_binary: Option<Vec<u8>>,
 }
 
+/// A linked device's name, as uploaded by the device itself. Encrypted with
+/// the account's ACI identity key (`DeviceName.proto`), see
+/// `crate::crypto::decrypt_device_name`.
+#[derive(Clone, PartialEq, ProstMessage)]
+pub(crate) struct DeviceNameProto {
+    #[prost(bytes = "vec", optional, tag = "1")]
+    pub ephemeral_public: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub synthetic_iv: Option<Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub ciphertext: Option<Vec<u8>>,
+}
+
 /// Envelope wrapping an encrypted `ProvisionMessage`.
 #[derive(Clone, PartialEq, ProstMessage)]
 pub(crate) struct ProvisionEnvelope {

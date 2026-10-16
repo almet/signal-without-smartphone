@@ -1,6 +1,7 @@
 //! Step 4: link Signal Desktop. Launch Desktop with this account's profile,
 //! then paste (or decode from the clipboard) the device-linking QR code and
-//! provision Desktop as a secondary device.
+//! provision Desktop as a secondary device. Works for the first Desktop as
+//! well as for additional ones (Signal allows five linked devices).
 
 use eframe::egui;
 use egui::RichText;
@@ -29,6 +30,7 @@ impl SignalSetupApp {
                 "3. Take a screenshot of the QR code (Cmd+Shift+4 on Mac, Win+Shift+S on Windows)",
                 "4. Click \"Paste QR Image\" to automatically decode it",
                 "   OR manually scan with a QR app and paste the tsdevice:// link",
+                "5. Click \"Link device\", then confirm the device name in Signal Desktop",
             ],
         );
 
@@ -122,7 +124,7 @@ impl SignalSetupApp {
             let uri = self.device_uri.trim().to_string();
             self.spawn(ctx.clone(), move || {
                 match backend::link_device(&account, &uri) {
-                    Ok(()) => WorkResult::LinkOk,
+                    Ok(device) => WorkResult::LinkOk { device },
                     Err(e) => WorkResult::LinkError(format_error_chain(&e)),
                 }
             });
