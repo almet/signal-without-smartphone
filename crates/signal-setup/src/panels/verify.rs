@@ -5,13 +5,69 @@
 use eframe::egui;
 use egui::RichText;
 use signal_setup_core as core;
+use signal_setup_core::RegistrationOptions;
 
 use crate::app::{SignalSetupApp, WorkResult};
 use crate::backend;
 use crate::theme::*;
 use crate::widgets::{format_error_chain, step_header, submit_row};
 
+/// Verify the code and register; then enable the registration lock if asked.
+/// A lock failure does not undo the registration, so it is reported as a
+/// warning next to the registered account.
+fn register(
+    phone: &str,
+    session_id: &str,
+    code: &str,
+    options: &RegistrationOptions,
+    enable_lock: bool,
+) -> WorkResult {
+    match backend::verify_and_register(phone, session_id, code, options) {
+        Ok(mut account) => {
+            let warning = if enable_lock {
+                backend::set_registration_lock(&mut account, true)
+                    .err()
+                    .map(|e| {
+                        format!(
+                            "the registration lock could not be enabled ({}). You can retry \
+                             from the account screen.",
+                            format_error_chain(&e)
+                        )
+                    })
+            } else {
+                None
+            };
+            WorkResult::VerifyOk { account, warning }
+        }
+        Err(core::SignalError::DeviceTransferAvailable) => WorkResult::DeviceTransferAvailable,
+        Err(core::SignalError::RegistrationLocked { time_remaining_ms }) => {
+            let days = time_remaining_ms / 86_400_000;
+            WorkResult::VerifyError(format!(
+                "this number is protected by a registration lock. Import the key file of \
+                 the account that holds it, then register again; or wait about {days} day(s) \
+                 of inactivity for the lock to expire."
+            ))
+        }
+        Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
+    }
+}
+
 impl SignalSetupApp {
+    /// Registration knobs from the form, plus the master key of a previous
+    /// registration of the same number so its lock can be passed.
+    fn registration_options(&self, skip_device_transfer: bool) -> RegistrationOptions {
+        let phone = self.phone.trim();
+        RegistrationOptions {
+            skip_device_transfer,
+            discoverable_by_phone_number: self.discoverable_by_phone_number,
+            unlock_master_key: self
+                .accounts
+                .iter()
+                .find(|a| a.phone == phone)
+                .map(|a| a.master_key_bytes()),
+        }
+    }
+
     pub(crate) fn ui_verify(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         // When a device transfer is available, replace the whole form with the prompt.
         if self.device_transfer_available {
@@ -65,19 +121,11 @@ impl SignalSetupApp {
                         let phone = self.phone.clone();
                         let session_id = self.session_id.clone().unwrap_or_default();
                         let code = self.verification_code.clone();
-                        let discoverable = self.discoverable_by_phone_number;
+                        let options = self.registration_options(true);
+                        let enable_lock = self.registration_lock;
                         self.device_transfer_available = false;
                         self.spawn(ctx.clone(), move || {
-                            match backend::verify_and_register(
-                                &phone,
-                                &session_id,
-                                &code,
-                                true,
-                                discoverable,
-                            ) {
-                                Ok(account) => WorkResult::VerifyOk { account },
-                                Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
-                            }
+                            register(&phone, &session_id, &code, &options, enable_lock)
                         });
                     }
                 });
@@ -111,17 +159,11 @@ impl SignalSetupApp {
             let phone = self.phone.clone();
             let session_id = self.session_id.clone().unwrap_or_default();
             let code = self.verification_code.clone();
-            let discoverable = self.discoverable_by_phone_number;
+            let options = self.registration_options(false);
+            let enable_lock = self.registration_lock;
             self.device_transfer_available = false;
             self.spawn(ctx.clone(), move || {
-                match backend::verify_and_register(&phone, &session_id, &code, false, discoverable)
-                {
-                    Ok(account) => WorkResult::VerifyOk { account },
-                    Err(core::SignalError::DeviceTransferAvailable) => {
-                        WorkResult::DeviceTransferAvailable
-                    }
-                    Err(e) => WorkResult::VerifyError(format_error_chain(&e)),
-                }
+                register(&phone, &session_id, &code, &options, enable_lock)
             });
         }
     }

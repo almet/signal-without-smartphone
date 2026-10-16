@@ -35,15 +35,24 @@ impl Step {
 // Background-work result types
 
 pub(crate) enum WorkResult {
-    RegisterOk { session_id: String },
-    RegisterNeedsCaptcha { session_id: String },
+    RegisterOk {
+        session_id: String,
+    },
+    RegisterNeedsCaptcha {
+        session_id: String,
+    },
     RegisterError(String),
-    VerifyOk { account: SignalAccount },
+    VerifyOk {
+        account: SignalAccount,
+        warning: Option<String>,
+    },
     VerifyError(String),
     DeviceTransferAvailable,
     LinkOk,
     LinkError(String),
-    RefreshLastSeenOk { account: SignalAccount },
+    RefreshLastSeenOk {
+        account: SignalAccount,
+    },
     RefreshLastSeenError(String),
 }
 
@@ -77,6 +86,8 @@ pub(crate) struct SignalSetupApp {
     /// Whether other Signal users can find this account by its phone number.
     /// Off by default: new accounts are registered as not discoverable.
     pub(crate) discoverable_by_phone_number: bool,
+    /// Protect the number with a registration lock.
+    pub(crate) registration_lock: bool,
     /// The (cached) list of accounts. Stored here to avoid re-reading from the keychain.
     pub(crate) accounts: Vec<SignalAccount>,
 }
@@ -84,12 +95,54 @@ pub(crate) struct SignalSetupApp {
 impl SignalSetupApp {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
-        let mut app = Self::default();
+        let mut app = Self::fresh();
         app.refresh_accounts();
         if !app.accounts.is_empty() {
             app.step = Step::Welcome;
         }
         app
+    }
+
+    /// Default state with the non-`false` defaults applied.
+    pub(crate) fn fresh() -> Self {
+        Self {
+            registration_lock: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        let accounts = std::mem::take(&mut self.accounts);
+        *self = Self::fresh();
+        self.accounts = accounts;
+        if !self.accounts.is_empty() {
+            self.step = Step::Welcome;
+        }
+    }
+
+    pub(crate) fn remember_account(&mut self, account: &SignalAccount) {
+        if let Err(e) = persistence::save(account) {
+            eprintln!("Warning: could not save account to disk: {e}");
+            self.status = Status::Error(format!("Could not save the account: {e}"));
+        }
+        self.accounts.retain(|a| a.phone != account.phone);
+        self.accounts.push(account.clone());
+    }
+
+    pub(crate) fn assign_desktop_profile(&self, account: &mut SignalAccount) {
+        if account.desktop_profile.is_some() {
+            return;
+        }
+        let taken: Vec<String> = self
+            .accounts
+            .iter()
+            .filter(|a| a.phone != account.phone)
+            .filter_map(|a| a.desktop_profile.clone())
+            .collect();
+        account.desktop_profile = Some(desktop::choose_profile_for_new_account(
+            &account.phone,
+            &taken,
+        ));
     }
 
     /// Reload the cached account list from keyring.
@@ -185,25 +238,19 @@ impl eframe::App for SignalSetupApp {
                 WorkResult::RegisterError(e) => {
                     self.status = Status::Error(format!("Registration failed: {e}"));
                 }
-                WorkResult::VerifyOk { mut account } => {
+                WorkResult::VerifyOk {
+                    mut account,
+                    warning,
+                } => {
                     // Bind a Signal Desktop profile to this account phone number.
-                    let taken: Vec<String> = self
-                        .accounts
-                        .iter()
-                        .filter_map(|a| a.desktop_profile.clone())
-                        .collect();
-                    account.desktop_profile = Some(desktop::choose_profile_for_new_account(
-                        &account.phone,
-                        &taken,
-                    ));
-                    if let Err(e) = persistence::save(&account) {
-                        eprintln!("Warning: could not save account to disk: {e}");
-                    }
-                    self.accounts.retain(|a| a.phone != account.phone);
-                    self.accounts.push(account.clone());
+                    self.assign_desktop_profile(&mut account);
+                    self.remember_account(&account);
                     self.signal_account = Some(account);
                     self.device_transfer_available = false;
-                    self.status = Status::Success("Phone number verified.".into());
+                    self.status = match warning {
+                        Some(w) => Status::Error(format!("Phone number verified, but: {w}")),
+                        None => Status::Success("Phone number verified.".into()),
+                    };
                     self.step = Step::Linking;
                 }
                 WorkResult::VerifyError(e) => {

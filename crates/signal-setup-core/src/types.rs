@@ -1,6 +1,7 @@
 //! Core data types shared across the crate: the in-memory `SignalAccount`,
 //! its serializable split (`PersistedAccount` + `AccountSecrets`), the
-//! `SignalError` type returned by all flows, and `VerificationRequest`.
+//! `SignalError` type returned by all flows, `VerificationRequest` and
+//! `RegistrationOptions`.
 
 use base64::prelude::*;
 use libsignal_protocol::{self as sigprot, IdentityKeyPair};
@@ -35,6 +36,10 @@ pub struct SignalAccount {
     /// registration time for new ones. See `crate::desktop`.
     pub desktop_profile: Option<String>,
     pub last_seen_refreshed_at: Option<u64>,
+    /// Whether a registration lock is enabled on the server for this account.
+    /// The lock token is derived from `master_key`, see
+    /// `crate::http::set_registration_lock`.
+    pub registration_lock: bool,
 }
 
 pub fn now_unix() -> u64 {
@@ -59,6 +64,8 @@ pub struct PersistedAccount {
     pub desktop_profile: Option<String>,
     #[serde(default)]
     pub last_seen_refreshed_at: Option<u64>,
+    #[serde(default)]
+    pub registration_lock: bool,
 }
 
 /// Sensitive fields for a `SignalAccount`. Serialized to JSON and stored as
@@ -85,6 +92,7 @@ impl SignalAccount {
             registration_id: self.registration_id,
             desktop_profile: self.desktop_profile.clone(),
             last_seen_refreshed_at: self.last_seen_refreshed_at,
+            registration_lock: self.registration_lock,
         };
         let secrets = AccountSecrets {
             password: self.password.clone(),
@@ -122,7 +130,14 @@ impl SignalAccount {
             registration_id: p.registration_id,
             desktop_profile: p.desktop_profile,
             last_seen_refreshed_at: p.last_seen_refreshed_at,
+            registration_lock: p.registration_lock,
         })
+    }
+
+    /// The 32-byte master key. Needed by callers that re-register a number
+    /// protected by this account's registration lock.
+    pub fn master_key_bytes(&self) -> Vec<u8> {
+        self.master_key.clone()
     }
 
     /// Create a fake account for demo/testing purposes.
@@ -146,8 +161,22 @@ impl SignalAccount {
             registration_id: 12345,
             desktop_profile: None,
             last_seen_refreshed_at: Some(now_unix()),
+            registration_lock: false,
         }
     }
+}
+
+#[derive(Clone, Default)]
+pub struct RegistrationOptions {
+    /// Opt out of Signal's device-to-device transfer and register fresh. Set
+    /// after a `SignalError::DeviceTransferAvailable` response.
+    pub skip_device_transfer: bool,
+    /// Whether other Signal users can find this account by its phone number.
+    pub discoverable_by_phone_number: bool,
+    /// Master key of a previous registration of the same number. When that
+    /// account has a registration lock, Signal only lets the number be
+    /// re-registered by a client that proves it knows this key.
+    pub unlock_master_key: Option<Vec<u8>>,
 }
 
 /// Error returned by all Signal API calls.
@@ -164,6 +193,11 @@ pub enum SignalError {
     /// allowing a fresh registration. Retry with `skip_device_transfer = true`.
     #[error("Device transfer available")]
     DeviceTransferAvailable,
+    /// The number is protected by a registration lock and the request did
+    /// not carry the matching lock token. `time_remaining_ms` is how long
+    /// the lock still holds if the account stays inactive.
+    #[error("Registration locked for {time_remaining_ms} ms")]
+    RegistrationLocked { time_remaining_ms: u64 },
     #[error("Invalid URI: {0}")]
     InvalidUri(String),
     #[error("Signal Protocol error: {0}")]
@@ -199,6 +233,7 @@ mod tests {
         assert_eq!(restored.aci, original.aci);
         assert_eq!(restored.pni, original.pni);
         assert_eq!(restored.registration_id, original.registration_id);
+        assert_eq!(restored.registration_lock, original.registration_lock);
         assert_eq!(
             restored.last_seen_refreshed_at,
             original.last_seen_refreshed_at

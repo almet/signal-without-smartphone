@@ -52,6 +52,17 @@ use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use crate::proto::{ProvisionEnvelope, ProvisionMessage};
 use crate::types::{SignalAccount, SignalError};
 
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().into()
+}
+
+/// Derive the registration lock token from the account's 32-byte master key.
+pub(crate) fn derive_registration_lock(master_key: &[u8]) -> String {
+    hex::encode(hmac_sha256(master_key, b"Registration Lock"))
+}
+
 /// `libsignal-protocol` uses rand 0.9, while `x25519-dalek` and `xeddsa` still
 /// use rand_core 0.6 traits. This wrapper bridges the two so a single `StdRng`
 /// instance can be passed to both APIs.
@@ -395,6 +406,18 @@ mod tests {
 
         let too_long = [b'a'; 300];
         assert!(encrypt_profile_field(&key, &too_long, &[53, 257], &mut rng).is_err());
+    }
+
+    #[test]
+    fn test_derive_registration_lock_known_answer() {
+        // Independently computed with Python:
+        //   hmac.new(bytes(range(32)), b"Registration Lock", "sha256").hexdigest()
+        let master_key: Vec<u8> = (0u8..32).collect();
+        assert_eq!(
+            derive_registration_lock(&master_key),
+            "0c5f865eea5eebe9ef4fa8c4d99cb91de301bebb5b3b91bf775da1a57c725975"
+        );
+        assert_eq!(derive_registration_lock(&master_key).len(), 64);
     }
 
     #[test]

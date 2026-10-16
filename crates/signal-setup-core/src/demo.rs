@@ -2,9 +2,9 @@
 //! registration and linking flow with fake delays. This is what runs when the cli
 //! is passed the `--demo` flag.
 //!
-//! The code `000000` forces a device transfer.
+//! The code `000000` forces a device transfer, `111111` a registration lock.
 
-use crate::types::{SignalAccount, SignalError, VerificationRequest};
+use crate::types::{RegistrationOptions, SignalAccount, SignalError, VerificationRequest};
 use std::thread;
 use std::time::Duration;
 
@@ -43,13 +43,18 @@ pub fn verify_and_register(
     phone: &str,
     _session_id: &str,
     code: &str,
-    skip_device_transfer: bool,
-    _discoverable_by_phone_number: bool,
+    options: &RegistrationOptions,
 ) -> Result<SignalAccount, SignalError> {
     fake_delay();
 
-    if code == "000000" && !skip_device_transfer {
+    if code == "000000" && !options.skip_device_transfer {
         return Err(SignalError::DeviceTransferAvailable);
+    }
+
+    if code == "111111" && options.unlock_master_key.is_none() {
+        return Err(SignalError::RegistrationLocked {
+            time_remaining_ms: 5 * 86_400 * 1000,
+        });
     }
 
     if code != "000000" && !code.chars().all(|c| c.is_ascii_digit()) {
@@ -62,6 +67,15 @@ pub fn verify_and_register(
 pub fn refresh_last_seen(account: &mut SignalAccount) -> Result<(), SignalError> {
     fake_delay();
     account.last_seen_refreshed_at = Some(crate::types::now_unix());
+    Ok(())
+}
+
+pub fn set_registration_lock(
+    account: &mut SignalAccount,
+    enabled: bool,
+) -> Result<(), SignalError> {
+    fake_delay();
+    account.registration_lock = enabled;
     Ok(())
 }
 

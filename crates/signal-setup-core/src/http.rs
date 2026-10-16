@@ -12,6 +12,11 @@
 //!      Signal Desktop's QR code and provisions Desktop as a linked device via
 //!      Signal's provisioning API, then sends the initial sync messages using
 //!      libsignal-protocol.
+//!
+//! Account protection:
+//!   4. `set_registration_lock` enables or disables Signal's registration
+//!      lock, which stops anyone holding the SIM from re-registering the
+//!      number unless they know the account's master key.
 
 use base64::prelude::*;
 use libsignal_protocol::{self as sigprot, Aci, IdentityKey, IdentityKeyPair};
@@ -25,13 +30,13 @@ use std::collections::HashMap;
 use x25519_dalek::PublicKey as X25519Public;
 
 use crate::crypto::{
-    encrypt_profile_field, encrypt_provision_message, encrypt_with_libsignal, parse_uuid_bytes,
-    pem_to_der, random_password, DevicePreKeyBundle,
+    derive_registration_lock, encrypt_profile_field, encrypt_provision_message,
+    encrypt_with_libsignal, parse_uuid_bytes, pem_to_der, random_password, DevicePreKeyBundle,
 };
 use crate::proto::{
     ContentProto, ProvisionMessage, SyncBlockedProto, SyncContactsProto, SyncMsgProto,
 };
-use crate::types::{SignalAccount, SignalError, VerificationRequest};
+use crate::types::{RegistrationOptions, SignalAccount, SignalError, VerificationRequest};
 
 const SIGNAL_PROD: &str = "https://chat.signal.org";
 const SIGNAL_STAGING: &str = "https://chat.staging.signal.org";
@@ -154,17 +159,19 @@ fn finalize_session_request(
 /// empty versioned profile, which the server requires before it will issue the
 /// profile key credentials that group operations rely on.
 ///
-/// `discoverable_by_phone_number` controls whether other Signal users can find
-/// this account by searching for its phone number.
+/// See `RegistrationOptions` for the knobs. When the number is protected by a
+/// registration lock from a previous registration, pass that registration's
+/// master key in `options.unlock_master_key`; otherwise Signal answers with
+/// `SignalError::RegistrationLocked`.
 ///
 /// On success returns a `SignalAccount` that must be kept alive for the device-
-/// linking step.
+/// linking step. The registration lock is not enabled here: call
+/// `set_registration_lock` on the returned account.
 pub fn verify_and_register(
     phone: &str,
     session_id: &str,
     code: &str,
-    skip_device_transfer: bool,
-    discoverable_by_phone_number: bool,
+    options: &RegistrationOptions,
 ) -> Result<SignalAccount, SignalError> {
     let client = build_client();
     let mut rng = StdRng::from_os_rng();
@@ -259,6 +266,8 @@ pub fn verify_and_register(
         unrestricted_unidentified_access: bool,
         discoverable_by_phone_number: bool,
         name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        registration_lock: Option<String>,
     }
 
     #[derive(Serialize)]
@@ -316,10 +325,14 @@ pub fn verify_and_register(
             },
             unidentified_access_key: BASE64_STANDARD.encode(unidentified_access_key),
             unrestricted_unidentified_access: false,
-            discoverable_by_phone_number,
+            discoverable_by_phone_number: options.discoverable_by_phone_number,
             name: String::new(),
+            registration_lock: options
+                .unlock_master_key
+                .as_deref()
+                .map(derive_registration_lock),
         },
-        skip_device_transfer,
+        skip_device_transfer: options.skip_device_transfer,
         every_signed_key_valid: true,
         aci_identity_key: BASE64_STANDARD.encode(aci_identity.identity_key().serialize()),
         pni_identity_key: BASE64_STANDARD.encode(pni_identity.identity_key().serialize()),
@@ -359,6 +372,21 @@ pub fn verify_and_register(
         return Err(SignalError::DeviceTransferAvailable);
     }
 
+    // 423 means the number is registration-locked and we did not present
+    // (or presented a wrong) lock token.
+    if resp.status().as_u16() == 423 {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LockedBody {
+            #[serde(default)]
+            time_remaining: u64,
+        }
+        let body: LockedBody = resp.json().unwrap_or(LockedBody { time_remaining: 0 });
+        return Err(SignalError::RegistrationLocked {
+            time_remaining_ms: body.time_remaining,
+        });
+    }
+
     #[derive(Deserialize)]
     struct RegistrationResponse {
         #[serde(rename = "uuid")]
@@ -386,7 +414,62 @@ pub fn verify_and_register(
         registration_id,
         desktop_profile: None,
         last_seen_refreshed_at: Some(crate::types::now_unix()),
+        registration_lock: false,
     })
+}
+
+/// Enable or disable Signal's registration lock on the account.
+///
+/// While the lock is on, re-registering the phone number requires the lock
+/// token, which is derived from the account's master key (kept in the
+/// keyring and in exported key files). Signal lifts the lock automatically
+/// once no device of the account has been seen for seven days.
+///
+/// Updates `account.registration_lock` on success; callers should persist
+/// the account afterwards.
+pub fn set_registration_lock(
+    account: &mut SignalAccount,
+    enabled: bool,
+) -> Result<(), SignalError> {
+    let aci = account.aci.as_deref().ok_or_else(|| {
+        SignalError::Other("Account has no ACI. Cannot change the registration lock".into())
+    })?;
+    let client = build_client();
+    let url = format!("{}/v1/accounts/registration_lock", signal_api());
+
+    let resp = if enabled {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LockBody {
+            registration_lock: String,
+        }
+        client
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .header("X-Signal-Agent", "OWD")
+            .basic_auth(aci, Some(&account.password))
+            .json(&LockBody {
+                registration_lock: derive_registration_lock(&account.master_key),
+            })
+            .send()?
+    } else {
+        client
+            .delete(&url)
+            .header("X-Signal-Agent", "OWD")
+            .basic_auth(aci, Some(&account.password))
+            .send()?
+    };
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(SignalError::Api {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    account.registration_lock = enabled;
+    Ok(())
 }
 
 fn upload_versioned_profile(

@@ -32,6 +32,34 @@ impl SignalSetupApp {
                 .color(MUTED)
                 .size(13.0),
         );
+        ui.checkbox(
+            &mut self.registration_lock,
+            RichText::new("Block re-registration of this number (registration lock)")
+                .color(MUTED)
+                .size(13.0),
+        );
+        ui.label(
+            RichText::new(
+                "With the lock on, receiving this number's SMS is not enough to take over \
+                 the account: Signal also asks for this account's keys. Export a key file \
+                 afterwards so you keep them.",
+            )
+            .color(MUTED)
+            .size(12.0),
+        );
+
+        let already_known = self.accounts.iter().any(|a| a.phone == self.phone.trim());
+        if already_known {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "⚠ This number is already saved here. Registering again creates a new \
+                     account with new keys: every linked Signal Desktop will be unlinked.",
+                )
+                .color(WARNING_AMBER)
+                .size(12.0),
+            );
+        }
 
         ui.add_space(18.0);
 

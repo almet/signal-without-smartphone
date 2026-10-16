@@ -5100,6 +5100,7 @@ dependencies = [
  "cbc",
  "dbus-secret-service-keyring-store",
  "dirs",
+ "hex",
  "hkdf",
  "hmac",
  "keyring-core",

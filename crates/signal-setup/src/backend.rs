@@ -8,7 +8,7 @@
 
 use signal_setup_core as core;
 use signal_setup_core::demo;
-use signal_setup_core::SignalAccount;
+use signal_setup_core::{RegistrationOptions, SignalAccount};
 use signal_setup_core::{SignalError, VerificationRequest};
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -49,24 +49,11 @@ pub(crate) fn verify_and_register(
     phone: &str,
     session_id: &str,
     code: &str,
-    skip_device_transfer: bool,
-    discoverable_by_phone_number: bool,
+    options: &RegistrationOptions,
 ) -> Result<SignalAccount, SignalError> {
     match mode() {
-        Mode::Demo => demo::verify_and_register(
-            phone,
-            session_id,
-            code,
-            skip_device_transfer,
-            discoverable_by_phone_number,
-        ),
-        _ => core::verify_and_register(
-            phone,
-            session_id,
-            code,
-            skip_device_transfer,
-            discoverable_by_phone_number,
-        ),
+        Mode::Demo => demo::verify_and_register(phone, session_id, code, options),
+        _ => core::verify_and_register(phone, session_id, code, options),
     }
 }
 
@@ -74,6 +61,16 @@ pub(crate) fn link_device(account: &SignalAccount, uri: &str) -> Result<(), Sign
     match mode() {
         Mode::Demo => demo::link_device(account, uri),
         _ => core::link_device(account, uri),
+    }
+}
+
+pub(crate) fn set_registration_lock(
+    account: &mut SignalAccount,
+    enabled: bool,
+) -> Result<(), SignalError> {
+    match mode() {
+        Mode::Demo => demo::set_registration_lock(account, enabled),
+        _ => core::set_registration_lock(account, enabled),
     }
 }
 

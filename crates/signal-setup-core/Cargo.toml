@@ -24,6 +24,8 @@ aes-gcm = "0.10"
 cbc = { version = "0.1", features = ["alloc"] }
 thiserror = "2"
 dirs = "5"
+# Registration lock tokens are hex encoded.
+hex = "0.4"
 
 # Cross-OS native keyring for storing per-account secrets (passwords,
 # identity key pairs, master and profile keys).

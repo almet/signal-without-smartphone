@@ -197,6 +197,7 @@ impl LegacyAccount {
                 registration_id: self.registration_id,
                 desktop_profile: None,
                 last_seen_refreshed_at: None,
+                registration_lock: false,
             },
             AccountSecrets {
                 password: self.password,

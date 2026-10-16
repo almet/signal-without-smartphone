@@ -1,5 +1,5 @@
-//! Final screen after a successful link: launch Signal Desktop, re-link with a
-//! fresh QR, or finish and reset back to the start.
+//! Final screen after a successful link: launch Signal Desktop, link another
+//! Desktop with a fresh QR, or finish and go back to the start.
 
 use eframe::egui;
 use egui::RichText;
@@ -64,11 +64,13 @@ impl SignalSetupApp {
 
                 if ui
                     .add(
-                        egui::Button::new(RichText::new("Re-link").size(14.0).color(HEADING))
-                            .fill(INSET_BG)
-                            .stroke(egui::Stroke::new(1.0, BORDER))
-                            .rounding(egui::Rounding::same(8.0))
-                            .min_size(egui::vec2(120.0, 40.0)),
+                        egui::Button::new(
+                            RichText::new("Link another Desktop").size(14.0).color(HEADING),
+                        )
+                        .fill(INSET_BG)
+                        .stroke(egui::Stroke::new(1.0_f32, BORDER))
+                        .rounding(egui::Rounding::same(8.0))
+                        .min_size(egui::vec2(120.0, 40.0)),
                     )
                     .clicked()
                 {
@@ -102,13 +104,13 @@ impl SignalSetupApp {
                 // step 4 so the user can paste a fresh QR.
                 self.device_uri.clear();
                 self.status = Status::Info(
-                    "Re-linking. Show a fresh QR code from Signal Desktop, then paste it below."
+                    "Show a fresh QR code from the Signal Desktop to link, then paste it below."
                         .into(),
                 );
                 self.step = Step::Linking;
             }
             Some(CompleteAction::Done) => {
-                *self = SignalSetupApp::default();
+                self.reset();
             }
             None => {}
         }
