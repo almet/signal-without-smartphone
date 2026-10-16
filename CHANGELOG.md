@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.0.0]- 2026-10-16
 
 - Add the ability to link multiple devices from the interface. Fixes #8.
 - Add an import/export mechanism for the account master key. It will be encrypted with a passphrase of your chosing. Fixes #7.
@@ -132,8 +132,9 @@ Same set of changes as 3.0.1, released from a parallel branch.
   Signal account and link Signal Desktop without a smartphone.
 - GitHub Actions workflow publishing binaries on release.
 
-[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/almet/signal-without-smartphone/compare/v4.0.0...HEAD
 
+[4.0.0]: https://github.com/almet/signal-without-smartphone/compare/v4.0.0...v3.4.0
 [3.4.0]: https://github.com/almet/signal-without-smartphone/compare/v3.4.0...v3.3.0
 [3.3.0]: https://github.com/almet/signal-without-smartphone/compare/v3.3.0...v3.2.0
 [3.2.0]: https://github.com/almet/signal-without-smartphone/compare/v3.1.2...v3.2.0
