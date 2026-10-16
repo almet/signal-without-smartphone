@@ -3,12 +3,11 @@
 
 use eframe::egui;
 use egui::RichText;
-use signal_setup_core as core;
 
-use crate::app::{SignalSetupApp, WorkResult};
+use crate::app::SignalSetupApp;
 use crate::backend;
 use crate::theme::*;
-use crate::widgets::{format_error_chain, instruction_box, open_url, step_header, submit_row};
+use crate::widgets::{instruction_box, open_url, step_header, submit_row};
 
 impl SignalSetupApp {
     pub(crate) fn ui_captcha(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -61,15 +60,7 @@ impl SignalSetupApp {
             let session_id = self.session_id.clone().unwrap_or_default();
             let token = self.captcha_token.trim().to_string();
             self.spawn(ctx.clone(), move || {
-                match backend::submit_captcha(&session_id, &token) {
-                    Ok(core::VerificationRequest::CodeSent { session_id }) => {
-                        WorkResult::RegisterOk { session_id }
-                    }
-                    Ok(core::VerificationRequest::CaptchaRequired { session_id }) => {
-                        WorkResult::RegisterNeedsCaptcha { session_id }
-                    }
-                    Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
-                }
+                SignalSetupApp::code_request_result(backend::submit_captcha(&session_id, &token))
             });
         }
     }

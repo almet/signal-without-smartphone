@@ -10,7 +10,7 @@ use signal_setup_core::RegistrationOptions;
 use crate::app::{SignalSetupApp, WorkResult};
 use crate::backend;
 use crate::theme::*;
-use crate::widgets::{format_error_chain, step_header, submit_row};
+use crate::widgets::{format_error_chain, step_header, submit_row, text_button};
 
 /// Verify the code and register; then enable the registration lock if asked.
 /// A lock failure does not undo the registration, so it is reported as a
@@ -153,6 +153,20 @@ impl SignalSetupApp {
 
         let ready = !self.verification_code.is_empty();
         let clicked = submit_row(ui, ready, "Verify");
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("No code received?").color(MUTED).size(13.0));
+            if text_button(ui, "Send a new code", SIGNAL_BLUE) {
+                let phone = self.phone.clone();
+                self.status = crate::app::Status::None;
+                self.spawn(ctx.clone(), move || {
+                    SignalSetupApp::code_request_result(backend::request_verification_code(
+                        &phone, None,
+                    ))
+                });
+            }
+        });
 
         if clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && ready)
         {

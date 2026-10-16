@@ -2,7 +2,13 @@
 //! registration and linking flow with fake delays. This is what runs when the cli
 //! is passed the `--demo` flag.
 //!
-//! The code `000000` forces a device transfer, `111111` a registration lock.
+//! Codes:
+//! - `000000` forces a device transfer
+//! - `111111` forces a registration lock.
+//!
+//! Captcha tokens:
+//! - `429` simulates the SMS throttle
+//! - `403` simulates a rejected captcha.
 
 use crate::types::{
     now_unix, LinkedDevice, RegistrationOptions, SignalAccount, SignalError, VerificationRequest,
@@ -33,9 +39,22 @@ pub fn request_verification_code(
 
 pub fn submit_captcha(
     _session_id: &str,
-    _captcha_token: &str,
+    captcha_token: &str,
 ) -> Result<VerificationRequest, SignalError> {
     fake_delay();
+    if captcha_token.contains("403") {
+        return Err(SignalError::CaptchaRejected(
+            "the captcha link was already used or has expired. Open the captcha page \
+             again, solve it, and paste the new link"
+                .into(),
+        ));
+    }
+    if captcha_token.contains("429") {
+        return Ok(VerificationRequest::CodeAlreadySent {
+            session_id: "demo-session-after-captcha".into(),
+            next_sms_secs: 42,
+        });
+    }
     Ok(VerificationRequest::CodeSent {
         session_id: "demo-session-after-captcha".into(),
     })

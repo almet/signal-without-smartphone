@@ -152,10 +152,37 @@ fn finalize_session_request(
         })
         .send()?;
 
+    // 429 here is Signal's per-number SMS throttle: an SMS went out to this
+    // number a moment ago and the session body says when the next one may
+    // be sent. The session itself stays valid, so the caller can verify the
+    // earlier code instead of failing.
+    if resp.status().as_u16() == 429 {
+        let body = resp.text().unwrap_or_default();
+        let throttled: Option<RegistrationSessionResponse> = serde_json::from_str(&body).ok();
+        return match throttled.and_then(|s| s.next_sms.filter(|n| *n > 0)) {
+            Some(next_sms_secs) => Ok(VerificationRequest::CodeAlreadySent {
+                session_id: session.id,
+                next_sms_secs,
+            }),
+            None => Err(SignalError::RateLimited {
+                retry_after_secs: retry_after_from_body(&body),
+            }),
+        };
+    }
+
     let _ = parse_response::<RegistrationSessionResponse>(resp)?;
     Ok(VerificationRequest::CodeSent {
         session_id: session.id,
     })
+}
+
+/// Seconds to wait as announced in a verification session body, if any.
+fn retry_after_from_body(body: &str) -> Option<u64> {
+    let session: RegistrationSessionResponse = serde_json::from_str(body).ok()?;
+    session
+        .next_sms
+        .filter(|n| *n > 0)
+        .or(session.next_verification_attempt.filter(|n| *n > 0))
 }
 
 /// Verify the user-supplied `code` and register the account.
@@ -1109,6 +1136,24 @@ fn patch_session_with_captcha(
         })
         .send()?;
 
+    // 403 means Signal did not accept this captcha token. Tokens are single
+    // use, so this happens when a token is submitted twice. The body is the
+    // session: when it no longer asks for a captcha, an earlier token was
+    // accepted and the session can simply be used as it is.
+    if resp.status().as_u16() == 403 {
+        let body = resp.text().unwrap_or_default();
+        if let Ok(session) = serde_json::from_str::<RegistrationSessionResponse>(&body) {
+            if !session.captcha_required() {
+                return Ok(session);
+            }
+        }
+        return Err(SignalError::CaptchaRejected(
+            "the captcha link was already used or has expired. Open the captcha page \
+             again, solve it, and paste the new link"
+                .into(),
+        ));
+    }
+
     parse_response(resp)
 }
 
@@ -1121,6 +1166,11 @@ fn parse_response<T: for<'de> Deserialize<'de>>(
         let body = resp.text().unwrap_or_default();
         if status.as_u16() == 402 {
             return Err(SignalError::CaptchaRequired);
+        }
+        if status.as_u16() == 429 {
+            return Err(SignalError::RateLimited {
+                retry_after_secs: retry_after_from_body(&body),
+            });
         }
         return Err(SignalError::Api {
             status: status.as_u16(),
@@ -1138,6 +1188,13 @@ struct RegistrationSessionResponse {
     allowed_to_request_code: bool,
     #[serde(default)]
     requested_information: Vec<String>,
+    /// Seconds until Signal sends another SMS for this session; `0` when
+    /// one can be requested right away.
+    #[serde(default)]
+    next_sms: Option<u64>,
+    /// Seconds until the next code may be submitted.
+    #[serde(default)]
+    next_verification_attempt: Option<u64>,
 }
 
 impl RegistrationSessionResponse {
@@ -1236,6 +1293,47 @@ mod tests {
         assert_eq!(key, vec![5u8; 33]);
     }
 
+    /// Bodies observed on a real registration: a 429 on the code request
+    /// (SMS throttle) and a 403 on a reused captcha token.
+    const THROTTLED_SESSION: &str = r#"{"id":"FzuBP0ZVT7mVxr-1zV0nlw==","nextSms":13,"nextCall":null,"nextVerificationAttempt":null,"allowedToRequestCode":true,"requestedInformation":[],"verified":false}"#;
+    const CLEARED_SESSION: &str = r#"{"id":"FzuBP0ZVT7mVxr-1zV0nlw==","nextSms":0,"nextCall":null,"nextVerificationAttempt":null,"allowedToRequestCode":true,"requestedInformation":[],"verified":false}"#;
+
+    #[test]
+    fn test_session_body_next_sms() {
+        let session: RegistrationSessionResponse = serde_json::from_str(THROTTLED_SESSION).unwrap();
+        assert_eq!(session.next_sms, Some(13));
+        assert!(!session.captcha_required());
+        assert!(session.allowed_to_request_code);
+        assert_eq!(retry_after_from_body(THROTTLED_SESSION), Some(13));
+    }
+
+    #[test]
+    fn test_session_body_without_wait() {
+        let session: RegistrationSessionResponse = serde_json::from_str(CLEARED_SESSION).unwrap();
+        assert_eq!(session.next_sms, Some(0));
+        assert!(!session.captcha_required());
+        assert_eq!(retry_after_from_body(CLEARED_SESSION), None);
+        assert_eq!(retry_after_from_body("not json"), None);
+    }
+
+    #[test]
+    fn test_rate_limited_error_message() {
+        assert_eq!(
+            SignalError::RateLimited {
+                retry_after_secs: Some(13)
+            }
+            .to_string(),
+            "Signal is rate limiting this number, try again in 13 s"
+        );
+        assert_eq!(
+            SignalError::RateLimited {
+                retry_after_secs: None
+            }
+            .to_string(),
+            "Signal is rate limiting this number"
+        );
+    }
+
     /// Smoke test: hit Signal's production server with a real HTTPS request
     /// and confirm the client can complete the round-trip: TLS handshake
     /// validated against Signal's root CA, request framing, and JSON
@@ -1255,6 +1353,7 @@ mod tests {
             Ok(_) => {}
             Err(SignalError::Api { .. }) => {}
             Err(SignalError::CaptchaRequired) => {}
+            Err(SignalError::RateLimited { .. }) => {}
             Err(SignalError::Other(_)) => {}
             Err(SignalError::Http(e)) => {
                 panic!("network/TLS failure talking to Signal production: {e}");
@@ -1275,6 +1374,7 @@ mod tests {
             Ok(_) => {}
             Err(SignalError::Api { .. }) => {}
             Err(SignalError::CaptchaRequired) => {}
+            Err(SignalError::RateLimited { .. }) => {}
             Err(SignalError::Other(_)) => {}
             Err(SignalError::Http(e)) => {
                 let mut chain = format!("{e}");

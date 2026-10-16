@@ -2,12 +2,11 @@
 
 use eframe::egui;
 use egui::RichText;
-use signal_setup_core as core;
 
-use crate::app::{SignalSetupApp, WorkResult};
+use crate::app::SignalSetupApp;
 use crate::backend;
 use crate::theme::*;
-use crate::widgets::{format_error_chain, step_header, submit_row, text_button};
+use crate::widgets::{step_header, submit_row, text_button};
 
 impl SignalSetupApp {
     pub(crate) fn ui_phone(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -83,18 +82,11 @@ impl SignalSetupApp {
         if clicked || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && ready)
         {
             let phone = self.phone.clone();
-            self.spawn(
-                ctx.clone(),
-                move || match backend::request_verification_code(&phone, None) {
-                    Ok(core::VerificationRequest::CodeSent { session_id }) => {
-                        WorkResult::RegisterOk { session_id }
-                    }
-                    Ok(core::VerificationRequest::CaptchaRequired { session_id }) => {
-                        WorkResult::RegisterNeedsCaptcha { session_id }
-                    }
-                    Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
-                },
-            );
+            self.spawn(ctx.clone(), move || {
+                SignalSetupApp::code_request_result(backend::request_verification_code(
+                    &phone, None,
+                ))
+            });
         }
     }
 }

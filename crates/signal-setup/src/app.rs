@@ -46,6 +46,10 @@ pub(crate) enum WorkResult {
     RegisterNeedsCaptcha {
         session_id: String,
     },
+    RegisterCodeAlreadySent {
+        session_id: String,
+        next_sms_secs: u64,
+    },
     RegisterError(String),
     VerifyOk {
         account: SignalAccount,
@@ -256,6 +260,35 @@ impl SignalSetupApp {
         self.step = Step::Welcome;
     }
 
+    /// Prefix "Captcha accepted. " so the user knows that part worked.
+    fn captcha_accepted_prefix(&self) -> &'static str {
+        if self.step == Step::Captcha {
+            "Captcha accepted. "
+        } else {
+            ""
+        }
+    }
+
+    pub(crate) fn code_request_result(
+        result: Result<signal_setup_core::VerificationRequest, signal_setup_core::SignalError>,
+    ) -> WorkResult {
+        use signal_setup_core::VerificationRequest as V;
+        match result {
+            Ok(V::CodeSent { session_id }) => WorkResult::RegisterOk { session_id },
+            Ok(V::CodeAlreadySent {
+                session_id,
+                next_sms_secs,
+            }) => WorkResult::RegisterCodeAlreadySent {
+                session_id,
+                next_sms_secs,
+            },
+            Ok(V::CaptchaRequired { session_id }) => {
+                WorkResult::RegisterNeedsCaptcha { session_id }
+            }
+            Err(e) => WorkResult::RegisterError(format_error_chain(&e)),
+        }
+    }
+
     pub(crate) fn selected_account(&self) -> Option<SignalAccount> {
         let phone = self.selected_phone.as_deref()?;
         self.accounts.iter().find(|a| a.phone == phone).cloned()
@@ -341,7 +374,23 @@ impl eframe::App for SignalSetupApp {
             match result {
                 WorkResult::RegisterOk { session_id } => {
                     self.session_id = Some(session_id);
-                    self.status = Status::Info("Verification code sent to your phone.".into());
+                    self.status = Status::Info(format!(
+                        "{}Verification code sent to your phone.",
+                        self.captcha_accepted_prefix()
+                    ));
+                    self.step = Step::Verification;
+                }
+                WorkResult::RegisterCodeAlreadySent {
+                    session_id,
+                    next_sms_secs,
+                } => {
+                    self.session_id = Some(session_id);
+                    self.status = Status::Info(format!(
+                        "{}Signal already sent a code to this number a moment ago. You need \
+                         to wait {next_sms_secs}s before trying again. Enter the code you \
+                         received, or request a new one after that delay.",
+                        self.captcha_accepted_prefix()
+                    ));
                     self.step = Step::Verification;
                 }
                 WorkResult::RegisterNeedsCaptcha { session_id } => {

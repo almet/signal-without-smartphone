@@ -34,6 +34,23 @@ The security of your signal conversations is as low as the security of the devic
 
 Some people don't have a smartphone, and they should be able to use Signal :-)
 
+### Share one account between several computers or people
+
+The tool registers as the account's *primary* device and links Signal
+Desktop as a secondary one. Signal allows five linked devices per account,
+and the tool can link them all: export the account's keys to an encrypted
+key file, import that file on another computer (or hand it to a colleague),
+and link that computer's Signal Desktop from there. The account screen lists
+the linked devices and lets you unlink any of them.
+
+### Nobody can hijack the number
+
+New accounts get Signal's *registration lock*: receiving the number's SMS is
+no longer enough to re-register it on another client, the account's keys are
+needed too. Signal lifts the lock after seven days without any device of the
+account connecting, so keep at least one Signal Desktop in use (or press
+"Keep account active" from time to time).
+
 ## Why a separate tool?
 
 As of now, Signal Desktop requires a phone number and a smartphone to set up an
@@ -96,6 +113,17 @@ sudo dnf install libxcb-devel libxkbcommon-devel openssl-devel protobuf-compiler
 sudo pacman -S libxcb libxkbcommon openssl protobuf
 ```
 
+## Key files
+
+Every account can be exported from its "Manage" screen as a key file:
+`signal-account-<number>.json`. It holds everything needed to act as the account's primary
+device, encrypted with a passphrase of your choosing.
+
+Keep it as a backup, you will be able to import it into another machine!
+
+Key files also cary the master key, which is useful for re-registering a number without
+waiting for the lock to expire.
+
 ## Testing with Signal's staging server
 
 You can run the tool against Signal's staging environment instead of production,
@@ -116,7 +144,9 @@ pnpm install
 pnpm start
 ```
 A `--demo` flag is also available for fully offline testing with fake data (no
-server needed).
+server needed). In demo mode, the verification code `000000` simulates an
+account eligible for device transfer and `111111` a registration-locked
+number.
 
 ## Under the hood
 
@@ -163,8 +193,12 @@ sequenceDiagram
     alt 409 Device transfer available
         Server-->>App: 409 / DeviceTransferAvailable
         Note over App: warn, retry skipping device transfer
+    else 423 Registration locked
+        Server-->>App: 423 / RegistrationLocked
+        Note over App: ask for the account's key file
     else Success
         Server-->>App: registered
+        App->>Server: PUT /v1/accounts/registration_lock (HMAC of master key)
         App->>Store: save metadata (disk) + secrets (keyring)
     end
     end
@@ -178,13 +212,16 @@ sequenceDiagram
     Server-->>App: verification_code
     Note over App: Build ProvisionMessage (identity keys,<br/>profile/master key, code) →<br/>ECDH + HKDF + AES-256-CBC + HMAC
     App->>Server: PUT /v1/provisioning/{ephemeral_id} (envelope)
-    Server-->>Desktop: deliver envelope / register as device 2
-    loop Poll up to 60s
-        App->>Server: GET /v2/keys/{aci}/2
-        Server-->>App: device 2 pre-keys (when ready)
+    Server-->>Desktop: deliver envelope / register as device N
+    loop Poll until a new device id shows up
+        App->>Server: GET /v1/devices
     end
-    Note over App: send_linked_device_sync():<br/>X3DH + Double Ratchet session,<br/>encrypt empty contacts SyncMessage
-    App->>Server: PUT /v1/messages/{aci} (encrypted sync)
+    loop For every linked device
+        App->>Server: GET /v2/keys/{aci}/{device}
+        Server-->>App: device pre-keys
+    end
+    Note over App: send_linked_device_sync():<br/>X3DH + Double Ratchet session per device,<br/>encrypt empty contacts SyncMessage
+    App->>Server: PUT /v1/messages/{aci} (encrypted sync, all linked devices)
     Server-->>Desktop: SyncMessage / leaves "Syncing…"
     end
 

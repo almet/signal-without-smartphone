@@ -211,6 +211,14 @@ pub enum SignalError {
     Api { status: u16, body: String },
     #[error("Captcha required")]
     CaptchaRequired,
+    /// Signal refused the captcha token. Tokens are single-use and expire
+    /// after a few minutes.
+    #[error("Signal rejected the captcha: {0}")]
+    CaptchaRejected(String),
+    /// Signal is rate limiting this number or session. `retry_after_secs`
+    /// is the wait Signal announced, when it announced one.
+    #[error("Signal is rate limiting this number{}", match .retry_after_secs { Some(s) => format!(", try again in {s} s"), None => String::new() })]
+    RateLimited { retry_after_secs: Option<u64> },
     /// The existing account on this number supports device-to-device data
     /// transfer. Signal requires the caller to explicitly opt out before
     /// allowing a fresh registration. Retry with `skip_device_transfer = true`.
@@ -233,6 +241,14 @@ pub enum SignalError {
 pub enum VerificationRequest {
     /// Code sent; caller must supply the session id to `verify_and_register`.
     CodeSent { session_id: String },
+    /// The session is valid (any captcha was accepted) but Signal did not
+    /// send a new SMS: one already went out to this number recently and the
+    /// next one is allowed in `next_sms_secs`. The earlier code can be
+    /// submitted with this session id.
+    CodeAlreadySent {
+        session_id: String,
+        next_sms_secs: u64,
+    },
     /// Signal requires captcha before sending the code.
     CaptchaRequired { session_id: String },
 }
