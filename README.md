@@ -38,18 +38,8 @@ Some people don't have a smartphone, and they should be able to use Signal :-)
 
 The tool registers as the account's *primary* device and links Signal
 Desktop as a secondary one. Signal allows five linked devices per account,
-and the tool can link them all: export the account's keys to an encrypted
-key file, import that file on another computer (or hand it to a colleague),
-and link that computer's Signal Desktop from there. The account screen lists
-the linked devices and lets you unlink any of them.
-
-### Nobody can hijack the number
-
-New accounts get Signal's *registration lock*: receiving the number's SMS is
-no longer enough to re-register it on another client, the account's keys are
-needed too. Signal lifts the lock after seven days without any device of the
-account connecting, so keep at least one Signal Desktop in use (or press
-"Keep account active" from time to time).
+and this tool can help link them all. That's helpful in situations where you want
+to share a signal account with a colleague, for instance.
 
 ## Why a separate tool?
 
