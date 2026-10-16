@@ -16,12 +16,15 @@
 //! Account management (after registration):
 //!   4. `list_devices` / `unlink_device` manage the account's linked devices.
 //!   5. `set_registration_lock` protects the number against re-registration.
+//!   6. `backup::export_account` / `backup::import_account` move an account's
+//!      keys between machines as a passphrase-encrypted file.
 //!
 //! The library is split into cohesive modules: `types` (account data types),
 //! `proto` (inline protobuf wire types), `crypto` (pure cryptographic
 //! helpers), `http` (the network flows and transport), `persistence`
-//! (on-disk + keyring storage), `desktop` (Signal Desktop integration), and
-//! `demo` (a fake backend for the UI demo mode).
+//! (on-disk + keyring storage), `backup` (encrypted key files), `desktop`
+//! (Signal Desktop integration), and `demo` (a fake backend for the UI demo
+//! mode).
 
 pub mod http;
 pub mod types;
@@ -29,6 +32,7 @@ pub mod types;
 mod crypto;
 mod proto;
 
+pub mod backup;
 pub mod demo;
 pub mod desktop;
 pub mod persistence;

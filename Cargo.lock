@@ -5096,6 +5096,7 @@ dependencies = [
  "aes",
  "aes-gcm",
  "apple-native-keyring-store",
+ "argon2",
  "base64 0.22.1",
  "cbc",
  "ctr",

@@ -28,6 +28,8 @@ dirs = "5"
 # tokens are hex encoded.
 ctr = "0.9"
 hex = "0.4"
+# Passphrase-based key derivation for exported account key files.
+argon2 = "0.5"
 
 # Cross-OS native keyring for storing per-account secrets (passwords,
 # identity key pairs, master and profile keys).
