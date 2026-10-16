@@ -4,6 +4,7 @@
 //! `impl` block. The update loop in `crate::app` calls them based on the
 //! current `Step`.
 
+mod account;
 mod captcha;
 mod complete;
 mod linking;

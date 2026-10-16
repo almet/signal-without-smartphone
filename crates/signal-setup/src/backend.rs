@@ -25,6 +25,18 @@ pub(crate) fn mode() -> Mode {
     MODE.get().copied().unwrap_or_default()
 }
 
+impl Mode {
+    /// Label recorded in exported key files, so a staging or demo account
+    /// is never imported into a production setup by mistake.
+    pub(crate) fn environment_label(self) -> &'static str {
+        match self {
+            Mode::Production => "production",
+            Mode::Staging => "staging",
+            Mode::Demo => "demo",
+        }
+    }
+}
+
 pub(crate) fn request_verification_code(
     phone: &str,
     captcha: Option<&str>,
@@ -71,6 +83,20 @@ pub(crate) fn set_registration_lock(
     match mode() {
         Mode::Demo => demo::set_registration_lock(account, enabled),
         _ => core::set_registration_lock(account, enabled),
+    }
+}
+
+pub(crate) fn list_devices(account: &SignalAccount) -> Result<Vec<LinkedDevice>, SignalError> {
+    match mode() {
+        Mode::Demo => demo::list_devices(account),
+        _ => core::list_devices(account),
+    }
+}
+
+pub(crate) fn unlink_device(account: &SignalAccount, device_id: u32) -> Result<(), SignalError> {
+    match mode() {
+        Mode::Demo => demo::unlink_device(account, device_id),
+        _ => core::unlink_device(account, device_id),
     }
 }
 

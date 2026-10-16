@@ -4,13 +4,15 @@ use signal_setup_core::{desktop, persistence};
 use signal_setup_core::{LinkedDevice, SignalAccount};
 use std::sync::mpsc;
 
+use crate::backend;
 use crate::theme::*;
-use crate::widgets::{draw_step_indicator, show_status};
+use crate::widgets::{draw_step_indicator, format_error_chain, show_status};
 
 #[derive(Default, PartialEq, Clone, Copy)]
 pub(crate) enum Step {
     /// The welcome screen is only shown when a previous account was linked
     Welcome,
+    Account,
     #[default]
     PhoneInput,
     Captcha,
@@ -20,9 +22,11 @@ pub(crate) enum Step {
 }
 
 impl Step {
+    /// Position in the registration step indicator. `0` means the step is
+    /// outside the registration flow and shows no indicator.
     fn number(self) -> usize {
         match self {
-            Step::Welcome => 0,
+            Step::Welcome | Step::Account => 0,
             Step::PhoneInput => 1,
             Step::Captcha => 2,
             Step::Verification => 3,
@@ -56,6 +60,25 @@ pub(crate) enum WorkResult {
         account: SignalAccount,
     },
     RefreshLastSeenError(String),
+    DevicesOk {
+        phone: String,
+        devices: Vec<LinkedDevice>,
+    },
+    DevicesError(String),
+    UnlinkOk {
+        phone: String,
+        device_id: u32,
+    },
+    UnlinkError(String),
+    LockOk {
+        account: SignalAccount,
+    },
+    LockError(String),
+    ExportOk {
+        path: Option<std::path::PathBuf>,
+        json: String,
+    },
+    ExportError(String),
 }
 
 #[derive(Default, Clone)]
@@ -92,6 +115,12 @@ pub(crate) struct SignalSetupApp {
     pub(crate) registration_lock: bool,
     /// The (cached) list of accounts. Stored here to avoid re-reading from the keychain.
     pub(crate) accounts: Vec<SignalAccount>,
+    pub(crate) selected_phone: Option<String>,
+    pub(crate) devices: Option<Vec<LinkedDevice>>,
+    pub(crate) export_passphrase: String,
+    pub(crate) export_passphrase_confirm: String,
+    /// Last export location and content (for the clipboard).
+    pub(crate) export_result: Option<(Option<std::path::PathBuf>, String)>,
 }
 
 impl SignalSetupApp {
@@ -145,6 +174,40 @@ impl SignalSetupApp {
             &account.phone,
             &taken,
         ));
+    }
+
+    pub(crate) fn open_account(&mut self, ctx: egui::Context, account: SignalAccount) {
+        self.selected_phone = Some(account.phone.clone());
+        self.devices = None;
+        self.export_passphrase.clear();
+        self.export_passphrase_confirm.clear();
+        self.export_result = None;
+        self.status = Status::None;
+        self.step = Step::Account;
+        self.load_devices(ctx, account);
+    }
+
+    pub(crate) fn load_devices(&mut self, ctx: egui::Context, account: SignalAccount) {
+        self.spawn(ctx, move || match backend::list_devices(&account) {
+            Ok(devices) => WorkResult::DevicesOk {
+                phone: account.phone.clone(),
+                devices,
+            },
+            Err(e) => WorkResult::DevicesError(format_error_chain(&e)),
+        });
+    }
+
+    pub(crate) fn start_linking(&mut self, account: SignalAccount, message: &str) {
+        self.phone = account.phone.clone();
+        self.signal_account = Some(account);
+        self.device_uri.clear();
+        self.status = Status::Info(message.into());
+        self.step = Step::Linking;
+    }
+
+    pub(crate) fn selected_account(&self) -> Option<SignalAccount> {
+        let phone = self.selected_phone.as_deref()?;
+        self.accounts.iter().find(|a| a.phone == phone).cloned()
     }
 
     /// Reload the cached account list from keyring.
@@ -272,6 +335,7 @@ impl eframe::App for SignalSetupApp {
                         "Device{name} linked successfully as device {}.",
                         device.id
                     ));
+                    self.devices = None;
                     self.step = Step::Complete;
                 }
                 WorkResult::LinkError(e) => {
@@ -292,6 +356,50 @@ impl eframe::App for SignalSetupApp {
                 }
                 WorkResult::RefreshLastSeenError(e) => {
                     self.status = Status::Error(format!("Could not refresh account activity: {e}"));
+                }
+                WorkResult::DevicesOk { phone, devices } => {
+                    if self.selected_phone.as_deref() == Some(phone.as_str()) {
+                        self.devices = Some(devices);
+                    }
+                }
+                WorkResult::DevicesError(e) => {
+                    self.devices = Some(vec![]);
+                    self.status = Status::Error(format!("Could not list linked devices: {e}"));
+                }
+                WorkResult::UnlinkOk { phone, device_id } => {
+                    if self.selected_phone.as_deref() == Some(phone.as_str()) {
+                        if let Some(devices) = self.devices.as_mut() {
+                            devices.retain(|d| d.id != device_id);
+                        }
+                    }
+                    self.status = Status::Success(format!("Device {device_id} unlinked."));
+                }
+                WorkResult::UnlinkError(e) => {
+                    self.status = Status::Error(format!("Could not unlink the device: {e}"));
+                }
+                WorkResult::LockOk { account } => {
+                    self.remember_account(&account);
+                    self.status = Status::Success(if account.registration_lock {
+                        "Registration lock enabled.".into()
+                    } else {
+                        "Registration lock disabled.".into()
+                    });
+                }
+                WorkResult::LockError(e) => {
+                    self.status =
+                        Status::Error(format!("Could not change the registration lock: {e}"));
+                }
+                WorkResult::ExportOk { path, json } => {
+                    self.export_passphrase.clear();
+                    self.export_passphrase_confirm.clear();
+                    self.status = Status::Success(match &path {
+                        Some(p) => format!("Key file written to {}", p.display()),
+                        None => "Key file ready. Copy it to the clipboard below.".into(),
+                    });
+                    self.export_result = Some((path, json));
+                }
+                WorkResult::ExportError(e) => {
+                    self.status = Status::Error(format!("Could not export the keys: {e}"));
                 }
             }
         }
@@ -360,6 +468,7 @@ impl eframe::App for SignalSetupApp {
 
                             match self.step {
                                 Step::Welcome => self.ui_welcome(ui),
+                                Step::Account => self.ui_account(ui, ctx),
                                 Step::PhoneInput => self.ui_phone(ui, ctx),
                                 Step::Captcha => self.ui_captcha(ui, ctx),
                                 Step::Verification => self.ui_verify(ui, ctx),

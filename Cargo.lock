@@ -5082,6 +5082,7 @@ name = "signal-setup"
 version = "3.4.0"
 dependencies = [
  "arboard",
+ "dirs",
  "eframe",
  "egui",
  "image",

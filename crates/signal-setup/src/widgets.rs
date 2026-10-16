@@ -215,6 +215,60 @@ pub(crate) fn submit_row(ui: &mut egui::Ui, enabled: bool, label: &str) -> bool 
     clicked
 }
 
+pub(crate) fn primary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(egui::Color32::WHITE).size(14.0))
+            .fill(SIGNAL_BLUE)
+            .rounding(egui::Rounding::same(6.0))
+            .min_size(egui::vec2(0.0, 32.0)),
+    )
+    .clicked()
+}
+
+pub(crate) fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(HEADING).size(14.0))
+            .fill(INSET_BG)
+            .stroke(egui::Stroke::new(1.0, BORDER))
+            .rounding(egui::Rounding::same(6.0))
+            .min_size(egui::vec2(0.0, 32.0)),
+    )
+    .clicked()
+}
+
+pub(crate) fn text_button(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> bool {
+    ui.add(egui::Button::new(RichText::new(label).color(color).size(13.0)).frame(false))
+        .clicked()
+}
+
+pub(crate) fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(title).size(15.0).color(HEADING).strong());
+    ui.add_space(6.0);
+    egui::Frame::none()
+        .fill(INSET_BG)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::same(12.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui);
+        });
+    ui.add_space(10.0);
+}
+
+/// Human-readable "x days ago" for a unix timestamp (seconds).
+pub(crate) fn days_ago(unix_secs: u64) -> String {
+    let days = signal_setup_core::now_unix().saturating_sub(unix_secs) / 86_400;
+    match days {
+        0 => "today".into(),
+        1 => "yesterday".into(),
+        d => format!("{d} days ago"),
+    }
+}
+
 /// Open an URL in the default detected browser.
 pub(crate) fn open_url(url: &str) {
     #[cfg(target_os = "linux")]

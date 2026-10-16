@@ -1,6 +1,3 @@
-//! Final screen after a successful link: launch Signal Desktop, link another
-//! Desktop with a fresh QR, or finish and go back to the start.
-
 use eframe::egui;
 use egui::RichText;
 use signal_setup_core::desktop;
@@ -22,6 +19,7 @@ impl SignalSetupApp {
         enum CompleteAction {
             Launch,
             Relink,
+            Manage,
             Done,
         }
         let mut action: Option<CompleteAction> = None;
@@ -41,7 +39,6 @@ impl SignalSetupApp {
                     .size(15.0)
                     .color(MUTED),
             );
-            ui.add_space(28.0);
 
             ui.horizontal(|ui| {
                 let can_launch = profile.is_some() && desktop::is_installed();
@@ -79,14 +76,31 @@ impl SignalSetupApp {
             });
 
             ui.add_space(12.0);
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("Done").size(13.0).color(MUTED)).frame(false),
-                )
-                .clicked()
-            {
-                action = Some(CompleteAction::Done);
-            }
+            ui.horizontal(|ui| {
+                // Center the pair of text buttons under the main row.
+                let total = 230.0;
+                ui.add_space((ui.available_width() - total).max(0.0) / 2.0);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Manage account").size(13.0).color(SIGNAL_BLUE),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    action = Some(CompleteAction::Manage);
+                }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Done").size(13.0).color(MUTED))
+                            .frame(false),
+                    )
+                    .clicked()
+                {
+                    action = Some(CompleteAction::Done);
+                }
+            });
         });
         ui.add_space(16.0);
 
@@ -108,6 +122,12 @@ impl SignalSetupApp {
                         .into(),
                 );
                 self.step = Step::Linking;
+            }
+            Some(CompleteAction::Manage) => {
+                if let Some(account) = self.signal_account.clone() {
+                    let ctx = ui.ctx().clone();
+                    self.open_account(ctx, account);
+                }
             }
             Some(CompleteAction::Done) => {
                 self.reset();

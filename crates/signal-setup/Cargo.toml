@@ -17,3 +17,5 @@ egui = "0.30"
 image = "0.25"
 rxing = "0.6"
 arboard = "3.4"
+# Download directory for exported key files.
+dirs = "5"

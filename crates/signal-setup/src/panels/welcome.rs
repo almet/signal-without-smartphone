@@ -1,16 +1,16 @@
 //! Welcome screen: shown at startup when saved accounts exist. Lets the user
-//! launch or re-link Signal Desktop for a saved account, delete one, or start
-//! registering a new number.
+//! launch Signal Desktop for a saved account, link another Desktop to it,
+//! open its management screen, or start registering a new number.
 
 use eframe::egui;
 use egui::RichText;
 use signal_setup_core::SignalAccount;
-use signal_setup_core::{desktop, persistence, types};
+use signal_setup_core::{desktop, types};
 
 use crate::app::{SignalSetupApp, Status, Step, WorkResult};
 use crate::backend;
 use crate::theme::*;
-use crate::widgets::step_header;
+use crate::widgets::{primary_button, secondary_button, step_header};
 
 const STALE_AFTER_DAYS: u64 = 14;
 
@@ -30,15 +30,18 @@ impl SignalSetupApp {
         }
 
         ui.label(
-            RichText::new("Pick an account to re-link Signal Desktop, or register a new one:")
-                .color(MUTED),
+            RichText::new(
+                "Launch Signal Desktop for an account, link another computer to it, \
+                 or manage its devices, registration lock and key file.",
+            )
+            .color(MUTED),
         );
         ui.add_space(12.0);
 
         enum WelcomeAction {
             Launch(String),
-            Relink(SignalAccount),
-            Delete(String),
+            Link(SignalAccount),
+            Manage(SignalAccount),
             RefreshLastSeen(SignalAccount),
         }
         let mut action: Option<WelcomeAction> = None;
@@ -57,53 +60,29 @@ impl SignalSetupApp {
                                 .color(HEADING)
                                 .strong(),
                         );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Delete").color(ERROR_RED).size(13.0),
-                                    )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                action = Some(WelcomeAction::Delete(account.phone.clone()));
+                        if account.registration_lock {
+                            ui.label(
+                                RichText::new("🔒 registration lock on")
+                                    .size(12.0)
+                                    .color(MUTED),
+                            );
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let can_launch =
+                            account.desktop_profile.is_some() && desktop::is_installed();
+                        if primary_button(ui, "Launch", can_launch) {
+                            if let Some(p) = account.desktop_profile.clone() {
+                                action = Some(WelcomeAction::Launch(p));
                             }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Re-link Desktop").color(HEADING).size(14.0),
-                                    )
-                                    .fill(INSET_BG)
-                                    .stroke(egui::Stroke::new(1.0, BORDER))
-                                    .rounding(egui::Rounding::same(6.0))
-                                    .min_size(egui::vec2(120.0, 32.0)),
-                                )
-                                .clicked()
-                            {
-                                action = Some(WelcomeAction::Relink(account.clone()));
-                            }
-                            let can_launch =
-                                account.desktop_profile.is_some() && desktop::is_installed();
-                            if ui
-                                .add_enabled(
-                                    can_launch,
-                                    egui::Button::new(
-                                        RichText::new("🚀  Launch")
-                                            .color(egui::Color32::WHITE)
-                                            .size(14.0),
-                                    )
-                                    .fill(SIGNAL_BLUE)
-                                    .rounding(egui::Rounding::same(6.0))
-                                    .min_size(egui::vec2(120.0, 32.0)),
-                                )
-                                .clicked()
-                            {
-                                if let Some(p) = account.desktop_profile.clone() {
-                                    action = Some(WelcomeAction::Launch(p));
-                                }
-                            }
-                        });
+                        }
+                        if secondary_button(ui, "Link a Desktop", true) {
+                            action = Some(WelcomeAction::Link(account.clone()));
+                        }
+                        if secondary_button(ui, "Manage", true) {
+                            action = Some(WelcomeAction::Manage(account.clone()));
+                        }
                     });
 
                     let days = days_since_last_seen_refresh(account);
@@ -179,14 +158,15 @@ impl SignalSetupApp {
                         Status::Info(format!("Signal Desktop launched (profile: {profile})."));
                 }
             }
-            Some(WelcomeAction::Relink(account)) => {
-                self.phone = account.phone.clone();
-                self.signal_account = Some(account);
-                self.status = Status::Info(
-                    "Using the saved account. Paste a new linking QR code from Signal Desktop."
-                        .into(),
+            Some(WelcomeAction::Link(account)) => {
+                self.start_linking(
+                    account,
+                    "Using the saved account. Paste a linking QR code from Signal Desktop.",
                 );
-                self.step = Step::Linking;
+            }
+            Some(WelcomeAction::Manage(account)) => {
+                let ctx = ui.ctx().clone();
+                self.open_account(ctx, account);
             }
             Some(WelcomeAction::RefreshLastSeen(mut account)) => {
                 let ctx = ui.ctx().clone();
@@ -204,14 +184,6 @@ impl SignalSetupApp {
                         Err(e) => WorkResult::RefreshLastSeenError(e.to_string()),
                     }
                 });
-            }
-            Some(WelcomeAction::Delete(phone)) => {
-                if let Err(e) = persistence::delete(&phone) {
-                    self.status = Status::Error(format!("Could not delete account: {e}"));
-                } else {
-                    self.accounts.retain(|a| a.phone != phone);
-                    self.status = Status::Success(format!("Deleted {phone}."));
-                }
             }
             None => {}
         }
