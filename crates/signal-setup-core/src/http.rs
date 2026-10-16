@@ -776,27 +776,17 @@ fn send_linked_device_sync(
 }
 
 /// Build a `reqwest` blocking client.
-///
-/// In production mode the client pins Signal's leaf certificate. In staging
-/// mode it trusts only the Signal root CA (the staging server presents a
-/// different leaf certificate so leaf pinning would fail).
 fn build_client() -> Client {
     let timeout = std::time::Duration::from_secs(30);
 
-    let tls_config = if USE_STAGING.load(std::sync::atomic::Ordering::Relaxed) {
-        build_staging_tls_config()
-    } else {
-        build_production_tls_config()
-    };
-
     Client::builder()
-        .use_preconfigured_tls(tls_config)
+        .use_preconfigured_tls(build_tls_config())
         .timeout(timeout)
         .build()
         .expect("Failed to build HTTP client")
 }
 
-fn build_staging_tls_config() -> rustls::ClientConfig {
+fn build_tls_config() -> rustls::ClientConfig {
     use rustls::pki_types::CertificateDer;
     use std::sync::Arc;
 
@@ -810,78 +800,6 @@ fn build_staging_tls_config() -> rustls::ClientConfig {
         .with_safe_default_protocol_versions()
         .expect("Failed to set TLS protocol versions")
         .with_root_certificates(root_store)
-        .with_no_client_auth()
-}
-
-fn build_production_tls_config() -> rustls::ClientConfig {
-    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-    use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
-    use std::sync::Arc;
-
-    #[derive(Debug)]
-    struct PinnedCertVerifier {
-        pinned_der: Vec<u8>,
-    }
-
-    impl ServerCertVerifier for PinnedCertVerifier {
-        fn verify_server_cert(
-            &self,
-            end_entity: &CertificateDer<'_>,
-            _intermediates: &[CertificateDer<'_>],
-            _server_name: &ServerName<'_>,
-            _ocsp_response: &[u8],
-            _now: UnixTime,
-        ) -> Result<ServerCertVerified, TlsError> {
-            if end_entity.as_ref() == self.pinned_der.as_slice() {
-                Ok(ServerCertVerified::assertion())
-            } else {
-                Err(TlsError::General(
-                    "Server certificate does not match pinned Signal certificate".into(),
-                ))
-            }
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            _message: &[u8],
-            _cert: &CertificateDer<'_>,
-            _dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, TlsError> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            _message: &[u8],
-            _cert: &CertificateDer<'_>,
-            _dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, TlsError> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            vec![
-                SignatureScheme::ED25519,
-                SignatureScheme::ECDSA_NISTP256_SHA256,
-                SignatureScheme::ECDSA_NISTP384_SHA384,
-                SignatureScheme::RSA_PKCS1_SHA256,
-                SignatureScheme::RSA_PKCS1_SHA384,
-                SignatureScheme::RSA_PKCS1_SHA512,
-                SignatureScheme::RSA_PSS_SHA256,
-                SignatureScheme::RSA_PSS_SHA384,
-                SignatureScheme::RSA_PSS_SHA512,
-            ]
-        }
-    }
-
-    let pinned_der = pem_to_der(include_str!("../signal-root.crt"));
-
-    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .expect("Failed to set TLS protocol versions")
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedCertVerifier { pinned_der }))
         .with_no_client_auth()
 }
 
@@ -1054,7 +972,7 @@ mod tests {
 
     /// Smoke test: hit Signal's production server with a real HTTPS request
     /// and confirm the client can complete the round-trip: TLS handshake
-    /// against the pinned leaf certificate, request framing, and JSON
+    /// validated against Signal's root CA, request framing, and JSON
     /// response parsing.
     ///
     /// A real network/TLS failure (`SignalError::Http`) fails the test. Any
