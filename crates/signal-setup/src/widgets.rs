@@ -45,7 +45,7 @@ pub(crate) fn draw_step_indicator(
                 egui::pos2(cx + circle_radius + 4.0, cy),
                 egui::pos2(next_cx - circle_radius - 4.0, cy),
             ],
-            egui::Stroke::new(2.0, line_color),
+            egui::Stroke::new(2.0_f32, line_color),
         );
     }
 
@@ -129,7 +129,7 @@ pub(crate) fn show_status(ui: &mut egui::Ui, status: &Status) {
 
     egui::Frame::none()
         .fill(bg)
-        .stroke(egui::Stroke::new(1.0, border))
+        .stroke(egui::Stroke::new(1.0_f32, border))
         .rounding(egui::Rounding::same(8.0))
         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
         .show(ui, |ui| {
@@ -180,7 +180,7 @@ pub(crate) fn show_signal_desktop_status(ui: &mut egui::Ui) {
     };
     egui::Frame::none()
         .fill(bg)
-        .stroke(egui::Stroke::new(1.0, border))
+        .stroke(egui::Stroke::new(1.0_f32, border))
         .rounding(egui::Rounding::same(8.0))
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
         .show(ui, |ui| {
@@ -192,7 +192,7 @@ pub(crate) fn show_signal_desktop_status(ui: &mut egui::Ui) {
 pub(crate) fn instruction_box(ui: &mut egui::Ui, lines: &[&str]) {
     egui::Frame::none()
         .fill(INSET_BG)
-        .stroke(egui::Stroke::new(1.0, BORDER))
+        .stroke(egui::Stroke::new(1.0_f32, BORDER))
         .rounding(egui::Rounding::same(8.0))
         .inner_margin(egui::Margin::same(14.0))
         .show(ui, |ui| {
@@ -231,7 +231,7 @@ pub(crate) fn secondary_button(ui: &mut egui::Ui, label: &str, enabled: bool) ->
         enabled,
         egui::Button::new(RichText::new(label).color(HEADING).size(14.0))
             .fill(INSET_BG)
-            .stroke(egui::Stroke::new(1.0, BORDER))
+            .stroke(egui::Stroke::new(1.0_f32, BORDER))
             .rounding(egui::Rounding::same(6.0))
             .min_size(egui::vec2(0.0, 32.0)),
     )
@@ -249,7 +249,7 @@ pub(crate) fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(
     ui.add_space(6.0);
     egui::Frame::none()
         .fill(INSET_BG)
-        .stroke(egui::Stroke::new(1.0, BORDER))
+        .stroke(egui::Stroke::new(1.0_f32, BORDER))
         .rounding(egui::Rounding::same(8.0))
         .inner_margin(egui::Margin::same(12.0))
         .show(ui, |ui| {

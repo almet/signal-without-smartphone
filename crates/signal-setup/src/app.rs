@@ -554,7 +554,7 @@ impl eframe::App for SignalSetupApp {
                 egui::Frame::none()
                     .fill(egui::Color32::WHITE)
                     .inner_margin(egui::Margin::symmetric(28.0, 18.0))
-                    .stroke(egui::Stroke::new(1.0, BORDER)),
+                    .stroke(egui::Stroke::new(1.0_f32, BORDER)),
             )
             .show(ctx, |ui| {
                 ui.label(
@@ -593,7 +593,7 @@ impl eframe::App for SignalSetupApp {
                     egui::Frame::none()
                         .fill(CARD_BG)
                         .rounding(egui::Rounding::same(12.0))
-                        .stroke(egui::Stroke::new(1.0, BORDER))
+                        .stroke(egui::Stroke::new(1.0_f32, BORDER))
                         .inner_margin(egui::Margin::same(28.0))
                         .show(ui, |ui| {
                             // Stretch card to fill the available width.

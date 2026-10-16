@@ -77,7 +77,7 @@ impl SignalSetupApp {
             egui::Frame::none()
                 .fill(egui::Color32::from_rgb(255, 247, 237))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     egui::Color32::from_rgb(253, 186, 116),
                 ))
                 .rounding(egui::Rounding::same(10.0))

@@ -51,7 +51,7 @@ impl SignalSetupApp {
         for account in &self.accounts {
             egui::Frame::none()
                 .fill(INSET_BG)
-                .stroke(egui::Stroke::new(1.0, BORDER))
+                .stroke(egui::Stroke::new(1.0_f32, BORDER))
                 .rounding(egui::Rounding::same(8.0))
                 .inner_margin(egui::Margin::same(12.0))
                 .show(ui, |ui| {

@@ -38,17 +38,17 @@ pub(crate) fn setup_style(ctx: &egui::Context) {
 
     // Widget fill / border colors
     visuals.widgets.noninteractive.bg_fill = egui::Color32::WHITE;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
     visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
     visuals.widgets.hovered.bg_fill = INFO_BG;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, SIGNAL_BLUE);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5_f32, SIGNAL_BLUE);
     visuals.widgets.active.bg_fill = egui::Color32::from_rgb(219, 234, 254);
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, SIGNAL_BLUE);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5_f32, SIGNAL_BLUE);
 
     // Selection (text highlight)
     visuals.selection.bg_fill = egui::Color32::from_rgb(219, 234, 254);
-    visuals.selection.stroke = egui::Stroke::new(1.0, SIGNAL_BLUE);
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, SIGNAL_BLUE);
 
     ctx.set_visuals(visuals);
 

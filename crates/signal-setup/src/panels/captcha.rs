@@ -33,7 +33,7 @@ impl SignalSetupApp {
                         .color(SIGNAL_BLUE),
                 )
                 .fill(INFO_BG)
-                .stroke(egui::Stroke::new(1.0, INFO_BORDER))
+                .stroke(egui::Stroke::new(1.0_f32, INFO_BORDER))
                 .rounding(egui::Rounding::same(8.0))
                 .min_size(egui::vec2(0.0, 36.0)),
             )
